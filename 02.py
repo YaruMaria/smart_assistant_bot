@@ -16,7 +16,7 @@ dp = Dispatcher()
 conn = sqlite3.connect('users.db')
 cursor = conn.cursor()
 
-# Создаем таблицу пользователей, если она не существует
+# Создаю таблицу пользователей, если она не существует
 cursor.execute('''
 CREATE TABLE IF NOT EXISTS users (
     user_id INTEGER PRIMARY KEY,
