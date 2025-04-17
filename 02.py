@@ -51,12 +51,15 @@ CREATE TABLE IF NOT EXISTS daily_tasks_status (
 conn.commit()
 
 # Основная клавиатура
-reply_keyboard = [
-    [KeyboardButton(text="Поездки")],
-    [KeyboardButton(text="Планирование")],
-    [KeyboardButton(text="Заметки")]
-]
-kb = ReplyKeyboardMarkup(keyboard=reply_keyboard, resize_keyboard=True, one_time_keyboard=False)
+main_keyboard = ReplyKeyboardMarkup(
+    keyboard=[
+        [KeyboardButton(text="Поездки")],
+        [KeyboardButton(text="Планирование")],
+        [KeyboardButton(text="Заметки")]
+    ],
+    resize_keyboard=True,
+    one_time_keyboard=False
+)
 
 # Клавиатура для планирования
 planning_keyboard = ReplyKeyboardMarkup(
@@ -72,7 +75,7 @@ planning_keyboard = ReplyKeyboardMarkup(
 user_states = {}
 
 def get_user_tasks(user_id):
-    cursor.execute('SELECT id, task FROM daily_tasks WHERE user_id = ?', (user_id,))
+    cursor.execute('SELECT id, task FROM daily_tasks WHERE user_id = ? AND date = ?', (user_id, get_today_date()))
     return cursor.fetchall()
 
 def get_today_date():
@@ -107,7 +110,10 @@ async def send_tasks_with_status(message: types.Message):
         today_tasks.append((task_id, task_text, done))
 
     if not today_tasks:
-        await message.reply("У вас пока нет ежедневных дел на сегодня. Отправьте мне задачу, чтобы добавить её.", reply_markup=kb)
+        await message.reply(
+            "У вас пока нет ежедневных дел на сегодня. Пожалуйста, добавьте задачу, отправив текст задачи.",
+            reply_markup=main_keyboard
+        )
         user_states[user_id] = 'awaiting_task'
         return
 
@@ -116,9 +122,8 @@ async def send_tasks_with_status(message: types.Message):
         status = "✅" if done else "❌"
         text += f"{i}. {task_text} {status}\n"
     text += "\nЧтобы отметить задачу выполненной, отправьте её номер.\nЧтобы добавить новую задачу, отправьте текст задачи."
-    await message.reply(text, reply_markup=kb)
+    await message.reply(text, reply_markup=main_keyboard)
     user_states[user_id] = 'awaiting_action'
-
 
 @dp.message(Command('start'))
 async def start(message: types.Message):
@@ -138,13 +143,13 @@ async def start(message: types.Message):
             )
         )
         conn.commit()
-        await message.reply("Вы успешно зарегистрированы!", reply_markup=kb)
+        await message.reply("Вы успешно зарегистрированы!", reply_markup=main_keyboard)
     else:
-        await message.reply("Вы уже зарегистрированы.", reply_markup=kb)
+        await message.reply("Вы уже зарегистрированы.", reply_markup=main_keyboard)
 
 @dp.message(Command('help'))
 async def help_command(message: types.Message):
-    await message.reply("Выберите опцию:", reply_markup=kb)
+    await message.reply("Выберите опцию:", reply_markup=main_keyboard)
 
 @dp.message()
 async def handle_buttons(message: types.Message):
@@ -158,16 +163,16 @@ async def handle_buttons(message: types.Message):
     if state == 'awaiting_task':
         # Добавление новой задачи
         if text in ["Поездки", "Планирование", "Заметки"]:
-            await message.reply("Пожалуйста, сначала добавьте задачу или отмените действие.", reply_markup=kb)
+            await message.reply("Пожалуйста, сначала добавьте задачу или отмените действие.", reply_markup=main_keyboard)
             return
         try:
             today_date = get_today_date()  # Получаю текущую дату
             cursor.execute('INSERT INTO daily_tasks (user_id, task, date) VALUES (?, ?, ?)', (user_id, text, today_date))
             conn.commit()
-            await message.reply(f"Задача '{text}' добавлена!", reply_markup=kb)
+            await message.reply(f"Задача '{text}' добавлена!", reply_markup=main_keyboard)
             user_states.pop(user_id)
         except sqlite3.IntegrityError:
-            await message.reply("Такая задача уже есть.", reply_markup=kb)
+            await message.reply("Такая задача уже есть.", reply_markup=main_keyboard)
         return
 
     elif state == 'awaiting_action':
@@ -181,16 +186,16 @@ async def handle_buttons(message: types.Message):
                 new_status = 1 if current_status == 0 else 0
                 set_task_status(user_id, task_id, today_date, new_status)
                 status_text = "выполнена" if new_status == 1 else "не выполнена"
-                await message.reply(f"Задача '{task_text}' отмечена как {status_text}.", reply_markup=kb)
+                await message.reply(f"Задача '{task_text}' отмечена как {status_text}.", reply_markup=main_keyboard)
             else:
-                await message.reply("Неверный номер задачи. Пожалуйста, попробуйте снова.", reply_markup=kb)
+                await message.reply("Неверный номер задачи. Пожалуйста, попробуйте снова.", reply_markup=main_keyboard)
         except ValueError:
-            await message.reply("Пожалуйста, введите номер задачи.", reply_markup=kb)
+            await message.reply("Пожалуйста, введите номер задачи.", reply_markup=main_keyboard)
         return
 
     # Обработка кнопок
     if text == "Поездки":
-        await message.reply("Вы выбрали 'Поездки'. Пожалуйста, добавьте задачу.", reply_markup=kb)
+        await message.reply("Вы выбрали 'Поездки'. Пожалуйста, добавьте задачу.", reply_markup=main_keyboard)
         user_states[user_id] = 'awaiting_task'
         return
 
@@ -199,12 +204,12 @@ async def handle_buttons(message: types.Message):
         return
 
     elif text == "Заметки":
-        await message.reply("Вы выбрали 'Заметки'. Пожалуйста, добавьте задачу.", reply_markup=kb)
+        await message.reply("Вы выбрали 'Заметки'. Пожалуйста, добавьте задачу.", reply_markup=main_keyboard)
         user_states[user_id] = 'awaiting_task'
         return
 
     elif text == "Добавить задачу":
-        await message.reply("Пожалуйста, введите текст задачи:", reply_markup=kb)
+        await message.reply("Пожалуйста, введите текст задачи:", reply_markup=main_keyboard)
         user_states[user_id] = 'awaiting_task'
         return
 
