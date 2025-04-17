@@ -65,7 +65,7 @@ main_keyboard = ReplyKeyboardMarkup(
 planning_keyboard = ReplyKeyboardMarkup(
     keyboard=[
         [KeyboardButton(text="Добавить задачу")],
-        [KeyboardButton(text="Посмотреть список дел")]
+        [KeyboardButton(text="Посмотреть  список дел")]
     ],
     resize_keyboard=True,
     one_time_keyboard=True
