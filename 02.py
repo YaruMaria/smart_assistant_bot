@@ -230,9 +230,38 @@ async def handle_buttons(message: types.Message):
     #  Если ничего не подошло
     await message.reply("Неизвестная команда. Пожалуйста, выберите опцию:", reply_markup=main_keyboard)
 
+async def reminder_loop(bot: Bot):
+    while True:
+        await asyncio.sleep(60 * 60 * 2)  # 2 часа
+
+        today = get_today_date()
+        cursor.execute("SELECT DISTINCT user_id FROM daily_tasks WHERE date = ?", (today,))
+        users = cursor.fetchall()
+
+        for (user_id,) in users:
+            tasks = get_user_tasks(user_id)
+            for task_id, task_text in tasks:
+                status = get_task_status(user_id, task_id, today)
+                if status == 0:
+                    try:
+                        await bot.send_message(
+                            user_id,
+                            "🔔 У вас есть невыполненные задачи на сегодня. Не забудьте их завершить!",
+                            reply_markup=main_keyboard
+                        )
+                        break
+                    except Exception as e:
+                        logging.warning(f"Не удалось отправить сообщение пользователю {user_id}: {e}")
 
 
 
 if __name__ == '__main__':
     bot = Bot(token=BOT_TOKEN)
-    dp.run_polling(bot)
+
+    async def main():
+        # Запускаем фоновую задачу
+        asyncio.create_task(reminder_loop(bot))
+        # Запускаем бота
+        await dp.start_polling(bot)
+
+    asyncio.run(main())
