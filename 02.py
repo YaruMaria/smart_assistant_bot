@@ -74,7 +74,7 @@ main_keyboard = ReplyKeyboardMarkup(
 planning_keyboard = ReplyKeyboardMarkup(
     keyboard=[
         [KeyboardButton(text="Добавить задачу")],
-        [KeyboardButton(text="Посмотреть  список дел")]
+        [KeyboardButton(text="Посмотреть список дел")]
     ],
     resize_keyboard=True,
     one_time_keyboard=True
@@ -160,22 +160,35 @@ async def start(message: types.Message):
 async def help_command(message: types.Message):
     await message.reply("Выберите опцию:", reply_markup=main_keyboard)
 
+
 @dp.message()
 async def handle_buttons(message: types.Message):
     user_id = message.from_user.id
     text = message.text.strip()
     logging.info(f"Received message: {text} from user: {user_id}")
 
-    # Проверка состояния пользователя
+    # Обработка основных команд вне зависимости от состояния
+    if text == "Планирование":
+        user_states[user_id] = None  # Сброс состояния
+        await message.reply("Вы выбрали 'Планирование'.", reply_markup=planning_keyboard)
+        return
+
+    elif text == "Поездки":
+        user_states[user_id] = 'awaiting_task'
+        await message.reply("Вы выбрали 'Поездки'. Пожалуйста, добавьте задачу.", reply_markup=main_keyboard)
+        return
+
+    elif text == "Заметки":
+        user_states[user_id] = 'awaiting_task'
+        await message.reply("Вы выбрали 'Заметки'. Пожалуйста, добавьте задачу.", reply_markup=main_keyboard)
+        return
+
+    # Обработка состояний
     state = user_states.get(user_id)
 
     if state == 'awaiting_task':
-        # Добавление новой задачи
-        if text in ["Поездки", "Планирование", "Заметки"]:
-            await message.reply("Пожалуйста, сначала добавьте задачу или отмените действие.", reply_markup=main_keyboard)
-            return
         try:
-            today_date = get_today_date()  # Получаю текущую дату
+            today_date = get_today_date()
             cursor.execute('INSERT INTO daily_tasks (user_id, task, date) VALUES (?, ?, ?)', (user_id, text, today_date))
             conn.commit()
             await message.reply(f"Задача '{text}' добавлена!", reply_markup=main_keyboard)
@@ -196,38 +209,29 @@ async def handle_buttons(message: types.Message):
                 set_task_status(user_id, task_id, today_date, new_status)
                 status_text = "выполнена" if new_status == 1 else "не выполнена"
                 await message.reply(f"Задача '{task_text}' отмечена как {status_text}.", reply_markup=main_keyboard)
+                user_states.pop(user_id)
             else:
                 await message.reply("Неверный номер задачи. Пожалуйста, попробуйте снова.", reply_markup=main_keyboard)
         except ValueError:
             await message.reply("Пожалуйста, введите номер задачи.", reply_markup=main_keyboard)
         return
 
-    # Обработка кнопок
-    if text == "Поездки":
-        await message.reply("Вы выбрали 'Поездки'. Пожалуйста, добавьте задачу.", reply_markup=main_keyboard)
+    # Обработка кнопок из клавиатуры "Планирование"
+    if text == "Добавить задачу":
         user_states[user_id] = 'awaiting_task'
-        return
-
-    elif text == "Планирование":
-        await message.reply("Вы выбрали 'Планирование'.", reply_markup=planning_keyboard)
-        return
-
-    elif text == "Заметки":
-        await message.reply("Вы выбрали 'Заметки'. Пожалуйста, добавьте задачу.", reply_markup=main_keyboard)
-        user_states[user_id] = 'awaiting_task'
-        return
-
-    elif text == "Добавить задачу":
         await message.reply("Пожалуйста, введите текст задачи:", reply_markup=main_keyboard)
-        user_states[user_id] = 'awaiting_task'
         return
 
-    elif text == "Посмотреть список дел":
+    elif text.lower() == "посмотреть список дел":
         await send_tasks_with_status(message)
+        user_states[user_id] = 'awaiting_action'
         return
 
-    else:
-        await send_tasks_with_status(message)
+    #  Если ничего не подошло
+    await message.reply("Неизвестная команда. Пожалуйста, выберите опцию:", reply_markup=main_keyboard)
+
+
+
 
 if __name__ == '__main__':
     bot = Bot(token=BOT_TOKEN)
