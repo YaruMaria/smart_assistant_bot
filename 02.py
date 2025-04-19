@@ -8,6 +8,15 @@ from aiogram.types import ReplyKeyboardMarkup, KeyboardButton
 
 from config import BOT_TOKEN
 
+# делаю защиту против рекламы и т.д
+import requests
+
+TOKEN = '7585920451:AAFr1eFDKgH37GoqztPry9uw0XHWUTcVCrM'
+url = f'https://api.telegram.org/bot{TOKEN}/deleteWebhook'
+response = requests.get(url)
+print(response.json())
+
+
 logging.basicConfig(
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s', level=logging.INFO
 )
@@ -223,4 +232,3 @@ async def handle_buttons(message: types.Message):
 if __name__ == '__main__':
     bot = Bot(token=BOT_TOKEN)
     dp.run_polling(bot)
-
