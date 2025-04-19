@@ -16,7 +16,6 @@ url = f'https://api.telegram.org/bot{TOKEN}/deleteWebhook'
 response = requests.get(url)
 print(response.json())
 
-
 logging.basicConfig(
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s', level=logging.INFO
 )
@@ -57,6 +56,19 @@ CREATE TABLE IF NOT EXISTS daily_tasks_status (
 )
 ''')
 
+cursor.execute('''
+CREATE TABLE IF NOT EXISTS trips (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id INTEGER,
+    destination TEXT,
+    date TEXT,
+    time TEXT,
+    address TEXT,
+    created_at TEXT
+)
+''')
+conn.commit()
+
 conn.commit()
 
 # Основная клавиатура
@@ -82,13 +94,17 @@ planning_keyboard = ReplyKeyboardMarkup(
 
 # Хранилище состояния ожидания ввода задачи у пользователя
 user_states = {}
+trip_states = {}
+
 
 def get_user_tasks(user_id):
     cursor.execute('SELECT id, task FROM daily_tasks WHERE user_id = ? AND date = ?', (user_id, get_today_date()))
     return cursor.fetchall()
 
+
 def get_today_date():
     return datetime.now().strftime('%Y-%m-%d')
+
 
 def get_task_status(user_id, task_id, date):
     cursor.execute('SELECT done FROM daily_tasks_status WHERE user_id = ? AND task_id = ? AND date = ?',
@@ -98,6 +114,7 @@ def get_task_status(user_id, task_id, date):
         return row[0]
     return 0
 
+
 def set_task_status(user_id, task_id, date, done):
     try:
         cursor.execute('INSERT INTO daily_tasks_status (user_id, task_id, date, done) VALUES (?, ?, ?, ?)',
@@ -106,6 +123,7 @@ def set_task_status(user_id, task_id, date, done):
         cursor.execute('UPDATE daily_tasks_status SET done = ? WHERE user_id = ? AND task_id = ? AND date = ?',
                        (done, user_id, task_id, date))
     conn.commit()
+
 
 async def send_tasks_with_status(message: types.Message):
     user_id = message.from_user.id
@@ -134,6 +152,7 @@ async def send_tasks_with_status(message: types.Message):
     await message.reply(text, reply_markup=main_keyboard)
     user_states[user_id] = 'awaiting_action'
 
+
 @dp.message(Command('start'))
 async def start(message: types.Message):
     user_id = message.from_user.id
@@ -156,6 +175,7 @@ async def start(message: types.Message):
     else:
         await message.reply("Вы уже зарегистрированы.", reply_markup=main_keyboard)
 
+
 @dp.message(Command('help'))
 async def help_command(message: types.Message):
     await message.reply("Выберите опцию:", reply_markup=main_keyboard)
@@ -174,9 +194,11 @@ async def handle_buttons(message: types.Message):
         return
 
     elif text == "Поездки":
-        user_states[user_id] = 'awaiting_task'
-        await message.reply("Вы выбрали 'Поездки'. Пожалуйста, добавьте задачу.", reply_markup=main_keyboard)
+        trip_states[user_id] = {'step': 'awaiting_date', 'data': {}}
+        await message.reply("Введите дату поездки в формате ГГГГ-ММ-ДД (например, 2024-06-15):",
+                            reply_markup=main_keyboard)
         return
+
 
     elif text == "Заметки":
         user_states[user_id] = 'awaiting_task'
@@ -189,7 +211,8 @@ async def handle_buttons(message: types.Message):
     if state == 'awaiting_task':
         try:
             today_date = get_today_date()
-            cursor.execute('INSERT INTO daily_tasks (user_id, task, date) VALUES (?, ?, ?)', (user_id, text, today_date))
+            cursor.execute('INSERT INTO daily_tasks (user_id, task, date) VALUES (?, ?, ?)',
+                           (user_id, text, today_date))
             conn.commit()
             await message.reply(f"Задача '{text}' добавлена!", reply_markup=main_keyboard)
             user_states.pop(user_id)
@@ -227,14 +250,65 @@ async def handle_buttons(message: types.Message):
         user_states[user_id] = 'awaiting_action'
         return
 
-    #  Если ничего не подошло
-    await message.reply("Неизвестная команда. Пожалуйста, выберите опцию:", reply_markup=main_keyboard)
+    #  Обработка  ввода поездки
+    if user_id in trip_states:
+        state = trip_states[user_id]
+        step = state['step']
+        data = state['data']
+
+        if step == 'awaiting_date':
+            try:
+                datetime.strptime(text, '%Y-%m-%d')
+                data['date'] = text
+                state['step'] = 'awaiting_time'
+                await message.reply("Введите время поездки в формате ЧЧ:ММ (например, 14:30):")
+            except ValueError:
+                await message.reply("Неверный формат даты. Попробуйте снова (ГГГГ-ММ-ДД).")
+            return
+
+        elif step == 'awaiting_time':
+            try:
+                datetime.strptime(text, '%H:%M')
+                data['time'] = text
+                state['step'] = 'awaiting_address'
+                await message.reply("Введите адрес или место назначения:")
+            except ValueError:
+                await message.reply("Неверный формат времени. Попробуйте снова (ЧЧ:ММ).")
+            return
+
+        elif step == 'awaiting_address':
+            data['address'] = text
+            data['created_at'] = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+
+            # Сохраняю поездку
+            cursor.execute('''
+                    INSERT INTO trips (user_id, destination, date, time, address, created_at)
+                    VALUES (?, ?, ?, ?, ?, ?)
+                ''', (user_id, text, data['date'], data['time'], data['address'], data['created_at']))
+            conn.commit()
+
+            # Удаляю состояние
+            trip_states.pop(user_id)
+
+            # Формирую ссылку на карту
+            map_url = f"https://yandex.ru/maps/?text={text.replace(' ', '+')}"
+
+            await message.reply(
+                f"🚗 Поездка добавлена!\n📅 Дата: {data['date']}\n⏰ Время: {data['time']}\n📍 Адрес: {data['address']}\n\n"
+                f"🗺 Открыть на карте: {map_url}",
+                reply_markup=main_keyboard
+            )
+            return
+
 
 async def reminder_loop(bot: Bot):
     while True:
-        await asyncio.sleep(60 * 60 * 2)  # 2 часа
+        await asyncio.sleep(60 * 10)  # Проверяю каждые 10 минут
 
+        now = datetime.now()
         today = get_today_date()
+
+        # Напоминания о невыполненных задачах
         cursor.execute("SELECT DISTINCT user_id FROM daily_tasks WHERE date = ?", (today,))
         users = cursor.fetchall()
 
@@ -249,19 +323,20 @@ async def reminder_loop(bot: Bot):
                             "🔔 У вас есть невыполненные задачи на сегодня. Не забудьте их завершить!",
                             reply_markup=main_keyboard
                         )
-                        break
+                        break  # Отправляю только одно напоминание
                     except Exception as e:
                         logging.warning(f"Не удалось отправить сообщение пользователю {user_id}: {e}")
-
 
 
 if __name__ == '__main__':
     bot = Bot(token=BOT_TOKEN)
 
+
     async def main():
-        # Запускаем фоновую задачу
+        # Запускаю фоновую задачу
         asyncio.create_task(reminder_loop(bot))
-        # Запускаем бота
+        # Запускаю бота
         await dp.start_polling(bot)
+
 
     asyncio.run(main())
