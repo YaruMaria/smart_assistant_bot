@@ -2,11 +2,13 @@ import asyncio
 import logging
 import sqlite3
 from datetime import datetime
-from aiogram import Bot, Dispatcher, types
+from aiogram import Bot, Dispatcher, types, F
 from aiogram.filters import Command
 from aiogram.types import ReplyKeyboardMarkup, KeyboardButton
 from datetime import timedelta
-
+from stic import cmd_start as stic_start, photo_handler as stic_photo_handler, caption_handler as stic_caption_handler, \
+    user_data
+from stic import user_data as stic_user_data
 
 from config import BOT_TOKEN
 
@@ -78,7 +80,7 @@ main_keyboard = ReplyKeyboardMarkup(
     keyboard=[
         [KeyboardButton(text="Поездки")],
         [KeyboardButton(text="Планирование")],
-        [KeyboardButton(text="Заметки")]
+        [KeyboardButton(text="создать стикер")]
     ],
     resize_keyboard=True,
     one_time_keyboard=False
@@ -97,6 +99,36 @@ planning_keyboard = ReplyKeyboardMarkup(
 # Хранилище состояния ожидания ввода задачи у пользователя
 user_states = {}
 trip_states = {}
+
+@dp.message(F.text == "создать стикер")
+async def handle_create_sticker(message: types.Message):
+    stic_user_data[message.from_user.id] = {}  # Добавляю пользователя в stic_user_data
+    await stic_start(message)
+
+
+# Обработчик фотографий
+@dp.message(F.photo)
+async def handle_photo(message: types.Message):
+    if message.from_user.id in stic_user_data:
+        stic_user_data[message.from_user.id] = {  # Обновляю данные пользователя
+            'image_file_id': message.photo[-1].file_id,
+            'chat_id': message.chat.id
+        }
+        await stic_photo_handler(message)
+    else:
+        pass
+@dp.message(F.photo)
+async def photo_handler(message: types.Message):
+    user_data[message.from_user.id] = {
+        'image_file_id': message.photo[-1].file_id,
+        'chat_id': message.chat.id
+    }
+    await message.reply("Отлично! Теперь напиши текст для стикера.")
+# Обработчик текста для стикеров
+@dp.message(lambda message: message.from_user.id in stic_user_data)
+async def handle_text_for_sticker(message: types.Message):
+    await stic_caption_handler(message)
+
 
 
 def get_user_tasks(user_id):
@@ -352,7 +384,6 @@ async def trip_reminder_loop(bot: Bot):
             trip_start_time = datetime.strptime(f"{date} {time}", '%Y-%m-%d %H:%M')
             time_diff = (trip_start_time - now).total_seconds() / 60  # в минутах
 
-
             logging.info(f"Проверка поездки: {destination} в {time}, разница во времени: {time_diff} минут")
 
             if 29.5 < time_diff <= 30:  # Уведомление за 30 минут
@@ -370,8 +401,10 @@ async def trip_reminder_loop(bot: Bot):
                     reply_markup=main_keyboard
                 )
 
+
 if __name__ == '__main__':
     bot = Bot(token=BOT_TOKEN)
+
 
     async def main():
         # Запускаю фоновые задачи
@@ -380,8 +413,7 @@ if __name__ == '__main__':
         # Запускаю бота
         await dp.start_polling(bot)
 
+
     asyncio.run(main())
-
-
 
     asyncio.run(main())
