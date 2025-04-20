@@ -86,6 +86,7 @@ main_keyboard = ReplyKeyboardMarkup(
     one_time_keyboard=False
 )
 
+
 # Клавиатура для планирования
 planning_keyboard = ReplyKeyboardMarkup(
     keyboard=[
@@ -95,6 +96,17 @@ planning_keyboard = ReplyKeyboardMarkup(
     resize_keyboard=True,
     one_time_keyboard=True
 )
+
+trips_keyboard = ReplyKeyboardMarkup(
+    keyboard=[
+        [KeyboardButton(text="Посмотреть мои поездки")],
+        [KeyboardButton(text="Добавить поездку")],
+        [KeyboardButton(text="Назад")]
+    ],
+    resize_keyboard=True,
+    one_time_keyboard=True
+)
+
 
 # Хранилище состояния ожидания ввода задачи у пользователя
 user_states = {}
@@ -228,10 +240,24 @@ async def handle_buttons(message: types.Message):
         return
 
     elif text == "Поездки":
+        await message.reply("Вы выбрали 'Поездки'. Что вы хотите сделать?", reply_markup=trips_keyboard)
+        return
+
+    elif text == "Посмотреть мои поездки":
+        await show_upcoming_trips(message)
+        return
+
+    elif text == "Добавить поездку":
         trip_states[user_id] = {'step': 'awaiting_date', 'data': {}}
         await message.reply("Введите дату поездки в формате ГГГГ-ММ-ДД (например, 2024-06-15):",
                             reply_markup=main_keyboard)
         return
+
+    elif text == "Назад":
+        await message.reply("Возвращаемся в главное меню", reply_markup=main_keyboard)
+        return
+
+
 
 
     elif text == "Заметки":
@@ -335,32 +361,129 @@ async def handle_buttons(message: types.Message):
             return
 
 
+async def show_upcoming_trips(message: types.Message):
+    user_id = message.from_user.id
+    today = datetime.now().strftime('%Y-%m-%d')
+
+    # Получаем все поездки пользователя, начиная с сегодняшнего дня
+    cursor.execute('''
+        SELECT destination, date, time, address 
+        FROM trips 
+        WHERE user_id = ? AND date >= ?
+        ORDER BY date, time
+    ''', (user_id, today))
+
+    trips = cursor.fetchall()
+
+    if not trips:
+        await message.reply("У вас нет запланированных поездок.", reply_markup=trips_keyboard)
+        return
+
+    response = "Ваши запланированные поездки:\n\n"
+    for i, (destination, date, time, address) in enumerate(trips, 1):
+        map_url = f"https://yandex.ru/maps/?text={address.replace(' ', '+')}"
+        response += (
+            f"{i}. 🚗 {destination}\n"
+            f"   📅 {date} ⏰ {time}\n"
+            f"   📍 {address}\n"
+            f"   🗺 [Открыть на карте]({map_url})\n\n"
+        )
+
+    await message.reply(response, reply_markup=trips_keyboard, disable_web_page_preview=True)
+
+
 async def reminder_loop(bot: Bot):
+    # Словарь для хранения последнего отправленного мема
+    user_last_meme = {}
+
+    # Все мемы с картинками
+    meme_messages = [
+        {
+            "text": "⏰ Осталось совсем мало времени! Поторопись!",
+            "photo": "https://ltdfoto.ru/image/s4WGxu",
+
+        },
+        {
+            "text": "🔥 Время тикает! Не откладывай на потом!",
+            "photo": "https://ltdfoto.ru/image/s4WQ6Z",
+
+        },
+        {
+            "text": "🚀 Ты можешь это сделать! Осталось совсем немного!",
+            "photo": "https://ltdfoto.ru/images/2025/04/20/CAK-NORIS.jpg",
+
+        },
+        {
+            "text": "Будь как Челентано!",
+            "photo": "https://ltdfoto.ru/images/2025/04/20/CELENTANO.jpg",
+
+        },
+        {
+            "text": "Помни об этом!",
+            "photo": "https://ltdfoto.ru/images/2025/04/20/DI-KAPRIO-1.jpg",
+
+        }
+    ]
+
     while True:
-        await asyncio.sleep(60 * 10)  # Проверяю каждые 10 минут
+        await asyncio.sleep(60 * 60 * 2)  # 2 часа между напоминаниями
 
-        now = datetime.now()
         today = get_today_date()
-
-        # Напоминания о невыполненных задачах
         cursor.execute("SELECT DISTINCT user_id FROM daily_tasks WHERE date = ?", (today,))
-        users = cursor.fetchall()
 
-        for (user_id,) in users:
+        for (user_id,) in cursor.fetchall():
             tasks = get_user_tasks(user_id)
-            for task_id, task_text in tasks:
-                status = get_task_status(user_id, task_id, today)
-                if status == 0:
+            unfinished_tasks = [t for t in tasks if get_task_status(user_id, t[0], today) == 0]
+
+            if not unfinished_tasks:
+                continue
+
+            try:
+                # Инициализация для нового пользователя
+                if user_id not in user_last_meme:
+                    user_last_meme[user_id] = {
+                        'last_type': 'text',
+                        'meme_index': 0
+                    }
+
+                task_list = "\n".join(f"• {t[1]}" for t in unfinished_tasks)
+
+                if user_last_meme[user_id]['last_type'] == 'text':
+                    # Выбираем следующий мем по порядку
+                    meme_index = user_last_meme[user_id]['meme_index']
+                    meme = meme_messages[meme_index]
+
                     try:
-                        await bot.send_message(
+                        await bot.send_photo(
                             user_id,
-                            "🔔 У вас есть невыполненные задачи на сегодня. Не забудьте их завершить!",
+                            photo=meme["photo"],
+                            caption=f"{meme['text']}\n\nЗадачи:\n{task_list}",
                             reply_markup=main_keyboard
                         )
-                        break  # Отправляю только одно напоминание
                     except Exception as e:
-                        logging.warning(f"Не удалось отправить сообщение пользователю {user_id}: {e}")
+                        logging.error(f"Ошибка отправки мема: {e}")
+                        await bot.send_message(
+                            user_id,
+                            f"{meme['text']}\n\nЗадачи:\n{task_list}",
+                            reply_markup=main_keyboard
+                        )
 
+                    # Обновляю индекс для следующего мема
+                    user_last_meme[user_id]['meme_index'] = (meme_index + 1) % len(meme_messages)
+                    user_last_meme[user_id]['last_type'] = 'photo'
+                else:
+                    # Отправляю обычное текстовое напоминание
+                    await bot.send_message(
+                        user_id,
+                        f"🔔 Невыполненные задачи:\n{task_list}\n\nНе забудьте их завершить!",
+                        reply_markup=main_keyboard
+                    )
+                    user_last_meme[user_id]['last_type'] = 'text'
+
+            except Exception as e:
+                logging.error(f"Ошибка напоминания для {user_id}: {e}")
+                # Сбрасываем состояние при ошибке
+                user_last_meme[user_id] = {'last_type': 'text', 'meme_index': 0}
 
 async def trip_reminder_loop(bot: Bot):
     while True:
@@ -416,4 +539,3 @@ if __name__ == '__main__':
 
     asyncio.run(main())
 
-    asyncio.run(main())
