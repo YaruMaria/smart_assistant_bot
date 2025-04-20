@@ -5,6 +5,8 @@ from datetime import datetime
 from aiogram import Bot, Dispatcher, types
 from aiogram.filters import Command
 from aiogram.types import ReplyKeyboardMarkup, KeyboardButton
+from datetime import timedelta
+
 
 from config import BOT_TOKEN
 
@@ -250,7 +252,7 @@ async def handle_buttons(message: types.Message):
         user_states[user_id] = 'awaiting_action'
         return
 
-    #  Обработка  ввода поездки
+    #  Обработка ввода поездки
     if user_id in trip_states:
         state = trip_states[user_id]
         step = state['step']
@@ -328,15 +330,58 @@ async def reminder_loop(bot: Bot):
                         logging.warning(f"Не удалось отправить сообщение пользователю {user_id}: {e}")
 
 
+async def trip_reminder_loop(bot: Bot):
+    while True:
+        await asyncio.sleep(60)  # Проверяю каждую минуту
+
+        now = datetime.now()
+        current_time = now.strftime('%H:%M')
+        current_date = now.strftime('%Y-%m-%d')
+
+        # Получаю все поездки, которые должны начаться в ближайшее время
+        cursor.execute('''
+            SELECT user_id, destination, date, time, address 
+            FROM trips 
+            WHERE date = ?
+        ''', (current_date,))
+
+        upcoming_trips = cursor.fetchall()
+
+        for trip in upcoming_trips:
+            user_id, destination, date, time, address = trip
+            trip_start_time = datetime.strptime(f"{date} {time}", '%Y-%m-%d %H:%M')
+            time_diff = (trip_start_time - now).total_seconds() / 60  # в минутах
+
+
+            logging.info(f"Проверка поездки: {destination} в {time}, разница во времени: {time_diff} минут")
+
+            if 29.5 < time_diff <= 30:  # Уведомление за 30 минут
+                await bot.send_message(
+                    user_id,
+                    f"🚗 Напоминание: до поездки в {destination} осталось 30 минут!\n"
+                    f"📅 Дата: {date}\n⏰ Время: {time}\n📍 Адрес: {address}",
+                    reply_markup=main_keyboard
+                )
+            elif 59.5 < time_diff <= 60:  # Уведомление за 1 час
+                await bot.send_message(
+                    user_id,
+                    f"🚗 Напоминание: до поездки в {destination} остался 1 час!\n"
+                    f"📅 Дата: {date}\n⏰ Время: {time}\n📍 Адрес: {address}",
+                    reply_markup=main_keyboard
+                )
+
 if __name__ == '__main__':
     bot = Bot(token=BOT_TOKEN)
 
-
     async def main():
-        # Запускаю фоновую задачу
+        # Запускаю фоновые задачи
         asyncio.create_task(reminder_loop(bot))
+        asyncio.create_task(trip_reminder_loop(bot))
         # Запускаю бота
         await dp.start_polling(bot)
+
+    asyncio.run(main())
+
 
 
     asyncio.run(main())
