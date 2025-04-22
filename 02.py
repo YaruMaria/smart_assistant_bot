@@ -45,8 +45,9 @@ CREATE TABLE IF NOT EXISTS daily_tasks (
     user_id INTEGER,
     task TEXT,
     date TEXT,
+    priority INTEGER DEFAULT 3,  -- 1: высокая, 2: средняя, 3: низкая
     UNIQUE(user_id, task)
-);
+)
 ''')
 
 cursor.execute('''
@@ -116,6 +117,68 @@ back_keyboard = ReplyKeyboardMarkup(
 # Хранилище состояния ожидания ввода задачи у пользователя
 user_states = {}
 trip_states = {}
+
+
+async def send_tasks_with_status(message: types.Message):
+    user_id = message.from_user.id
+    cursor.execute('''
+        SELECT t.id, t.task, t.priority, s.done 
+        FROM daily_tasks t
+        LEFT JOIN daily_tasks_status s ON t.id = s.task_id AND s.user_id = t.user_id AND s.date = ?
+        WHERE t.date = ?
+    ''', (get_today_date(), get_today_date()))
+
+    tasks = cursor.fetchall()
+
+    if not tasks:
+        await message.reply(
+            "У вас пока нет ежедневных дел на сегодня. Пожалуйста, добавьте задачу, отправив текст задачи.",
+            reply_markup=main_keyboard
+        )
+        return
+
+    text = "Ваши ежедневные дела на сегодня:\n"
+    for i, (task_id, task_text, priority, done) in enumerate(tasks, 1):
+        status = "✅" if done else "❌"
+        priority_icon = "🔴" if priority == 1 else "🟡" if priority == 2 else "🟢"
+        text += f"{i}. {priority_icon} {task_text} {status}\n"
+    text += "\nЧтобы отметить задачу выполненной, отправьте её номер."
+
+    await message.reply(text, reply_markup=main_keyboard)
+    user_states[user_id] = 'awaiting_action'
+
+async def ask_task_priority(message: types.Message, task_text: str):
+    keyboard = InlineKeyboardMarkup(inline_keyboard=[
+        [
+            InlineKeyboardButton(text="🔴 Высокая", callback_data=f"set_priority:{task_text}:1"),
+            InlineKeyboardButton(text="🟡 Средняя", callback_data=f"set_priority:{task_text}:2"),
+            InlineKeyboardButton(text="🟢 Низкая", callback_data=f"set_priority:{task_text}:3")
+        ]
+    ])
+
+    await message.answer(
+        "Выберите приоритет задачи:",
+        reply_markup=keyboard
+    )
+
+@dp.callback_query(F.data.startswith("set_priority:"))
+async def set_task_priority(callback: types.CallbackQuery):
+    _, task_text, priority = callback.data.split(":")
+    user_id = callback.from_user.id
+    today_date = get_today_date()
+
+    try:
+        cursor.execute(
+            'INSERT INTO daily_tasks (user_id, task, date, priority) VALUES (?, ?, ?, ?)',
+            (user_id, task_text, today_date, int(priority)))
+        conn.commit()
+        await callback.message.edit_text(f"Задача '{task_text}' добавлена с приоритетом {priority}!")
+    except sqlite3.IntegrityError:
+        await callback.message.edit_text("Такая задача уже существует.")
+    except Exception as e:
+        logging.error(f"Ошибка добавления задачи: {e}")
+        await callback.message.edit_text("Произошла ошибка при добавлении задачи.")
+
 
 
 #  КАЛЕНДАРЬ
@@ -372,8 +435,13 @@ async def show_upcoming_trips(message: types.Message):
 
 @dp.message(F.text == "Добавить поездку")
 async def add_trip(message: types.Message):
-    #Начало добавления поездки - показываем календарь
+    #Начало добавления поездки - показываю календарь
     await show_calendar(message.chat.id)
+
+@dp.message(F.text == "Добавить задачу")
+async def add_task_handler(message: types.Message):
+    user_states[message.from_user.id] = 'awaiting_task'
+    await message.reply("Пожалуйста, введите текст задачи:", reply_markup=main_keyboard)
 
 
 @dp.message()
@@ -381,6 +449,8 @@ async def handle_buttons(message: types.Message):
     user_id = message.from_user.id
     text = message.text.strip()
     logging.info(f"Received message: {text} from user: {user_id}")
+    user_id = message.from_user.id
+    text = message.text.strip()
 
     if text == "Планирование":
         user_states[user_id] = None
@@ -402,16 +472,9 @@ async def handle_buttons(message: types.Message):
     # Обработка состояний
     state = user_states.get(user_id)
 
-    if state == 'awaiting_task':
-        try:
-            today_date = get_today_date()
-            cursor.execute('INSERT INTO daily_tasks (user_id, task, date) VALUES (?, ?, ?)',
-                           (user_id, text, today_date))
-            conn.commit()
-            await message.reply(f"Задача '{text}' добавлена!", reply_markup=main_keyboard)
-            user_states.pop(user_id)
-        except sqlite3.IntegrityError:
-            await message.reply("Такая задача уже есть.", reply_markup=main_keyboard)
+    if user_states.get(user_id) == 'awaiting_task':
+        await ask_task_priority(message, text)
+        user_states.pop(user_id)
         return
 
     elif state == 'awaiting_action':
@@ -433,11 +496,10 @@ async def handle_buttons(message: types.Message):
             await message.reply("Пожалуйста, введите номер задачи.", reply_markup=main_keyboard)
         return
 
-    # Обработка кнопок из клавиатуры "Планирование"
     if text == "Добавить задачу":
-        user_states[user_id] = 'awaiting_task'
-        await message.reply("Пожалуйста, введите текст задачи:", reply_markup=main_keyboard)
+        await add_task_handler(message)
         return
+
 
     elif text.lower() == "посмотреть список дел":
         await send_tasks_with_status(message)
@@ -499,58 +561,78 @@ async def reminder_loop(bot: Bot):
         {"text": "Помни об этом!", "photo": "https://ltdfoto.ru/images/2025/04/20/DI-KAPRIO-1.jpg"}
     ]
 
+    # Интервалы напоминаний для каждого приоритета
+    priority_intervals = {
+        1: 60 * 60,
+        2: 2 * 60 * 60,
+        3: 3 * 60 * 60
+    }
+
+    # Время последнего напоминания для каждой задачи каждого пользователя
+    last_reminder_time = {}
+
     while True:
-        await asyncio.sleep(60 * 60 * 2)  # 2 часа между напоминаниями
-
+        now = datetime.now()
         today = get_today_date()
-        cursor.execute("SELECT DISTINCT user_id FROM daily_tasks WHERE date = ?", (today,))
 
-        for (user_id,) in cursor.fetchall():
-            tasks = get_user_tasks(user_id)
-            unfinished_tasks = [t for t in tasks if get_task_status(user_id, t[0], today) == 0]
+        # Получаем все незавершенные задачи всех пользователей
+        cursor.execute('''
+            SELECT t.user_id, t.id, t.task, t.priority, s.done 
+            FROM daily_tasks t
+            LEFT JOIN daily_tasks_status s ON t.id = s.task_id AND s.user_id = t.user_id AND s.date = ?
+            WHERE t.date = ? AND (s.done = 0 OR s.done IS NULL)
+        ''', (today, today))
 
-            if not unfinished_tasks:
-                continue
+        tasks = cursor.fetchall()
 
-            try:
-                if user_id not in user_last_meme:
-                    user_last_meme[user_id] = {'last_type': 'text', 'meme_index': 0}
+        for user_id, task_id, task_text, priority, _ in tasks:
+            # Проверяю, нужно ли отправлять напоминание для этой задачи
+            last_time = last_reminder_time.get((user_id, task_id), datetime.min)
+            time_since_last = (now - last_time).total_seconds()
 
-                task_list = "\n".join(f"• {t[1]}" for t in unfinished_tasks)
+            if time_since_last >= priority_intervals[priority]:
+                try:
+                    if user_id not in user_last_meme:
+                        user_last_meme[user_id] = {'last_type': 'text', 'meme_index': 0}
 
-                if user_last_meme[user_id]['last_type'] == 'text':
-                    meme_index = user_last_meme[user_id]['meme_index']
-                    meme = meme_messages[meme_index]
+                    # Определяю тип сообщения (текст или мем)
+                    if user_last_meme[user_id]['last_type'] == 'text':
+                        meme_index = user_last_meme[user_id]['meme_index']
+                        meme = meme_messages[meme_index]
 
-                    try:
-                        await bot.send_photo(
-                            user_id,
-                            photo=meme["photo"],
-                            caption=f"{meme['text']}\n\nЗадачи:\n{task_list}",
-                            reply_markup=main_keyboard
-                        )
-                    except Exception as e:
-                        logging.error(f"Ошибка отправки мема: {e}")
+                        try:
+                            await bot.send_photo(
+                                user_id,
+                                photo=meme["photo"],
+                                caption=f"{meme['text']}\n\nЗадача: {task_text}\nПриоритет: {'🔴 Высокий' if priority == 1 else '🟡 Средний' if priority == 2 else '🟢 Низкий'}",
+                                reply_markup=main_keyboard
+                            )
+                        except Exception as e:
+                            logging.error(f"Ошибка отправки мема: {e}")
+                            await bot.send_message(
+                                user_id,
+                                f"{meme['text']}\n\nЗадача: {task_text}\nПриоритет: {'🔴 Высокий' if priority == 1 else '🟡 Средний' if priority == 2 else '🟢 Низкий'}",
+                                reply_markup=main_keyboard
+                            )
+
+                        user_last_meme[user_id]['meme_index'] = (meme_index + 1) % len(meme_messages)
+                        user_last_meme[user_id]['last_type'] = 'photo'
+                    else:
                         await bot.send_message(
                             user_id,
-                            f"{meme['text']}\n\nЗадачи:\n{task_list}",
+                            f"🔔 Напоминание о задаче:\n{task_text}\nПриоритет: {'🔴 Высокий' if priority == 1 else '🟡 Средний' if priority == 2 else '🟢 Низкий'}",
                             reply_markup=main_keyboard
                         )
+                        user_last_meme[user_id]['last_type'] = 'text'
 
-                    user_last_meme[user_id]['meme_index'] = (meme_index + 1) % len(meme_messages)
-                    user_last_meme[user_id]['last_type'] = 'photo'
-                else:
-                    await bot.send_message(
-                        user_id,
-                        f"🔔 Невыполненные задачи:\n{task_list}\n\nНе забудьте их завершить!",
-                        reply_markup=main_keyboard
-                    )
-                    user_last_meme[user_id]['last_type'] = 'text'
+                    # Обновляю время последнего напоминания
+                    last_reminder_time[(user_id, task_id)] = now
 
-            except Exception as e:
-                logging.error(f"Ошибка напоминания для {user_id}: {e}")
-                user_last_meme[user_id] = {'last_type': 'text', 'meme_index': 0}
+                except Exception as e:
+                    logging.error(f"Ошибка напоминания для {user_id}: {e}")
+                    user_last_meme[user_id] = {'last_type': 'text', 'meme_index': 0}
 
+        await asyncio.sleep(10)  # Проверяю каждую минуту
 
 async def trip_reminder_loop(bot: Bot):
     while True:
