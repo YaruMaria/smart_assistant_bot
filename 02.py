@@ -73,6 +73,27 @@ CREATE TABLE IF NOT EXISTS trips (
 );
 ''')
 
+cursor.execute('''
+CREATE TABLE IF NOT EXISTS user_achievements (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id INTEGER,
+    badge_name TEXT,
+    badge_description TEXT,
+    achieved_at TEXT,
+    UNIQUE(user_id, badge_name)
+);
+''')
+
+cursor.execute('''
+CREATE TABLE IF NOT EXISTS user_stats (
+    user_id INTEGER PRIMARY KEY,
+    tasks_completed INTEGER DEFAULT 0,
+    high_priority_completed INTEGER DEFAULT 0,
+    streaks INTEGER DEFAULT 0,
+    last_completion_date TEXT
+);
+''')
+
 conn.commit()
 
 # Основная клавиатура
@@ -80,6 +101,7 @@ main_keyboard = ReplyKeyboardMarkup(
     keyboard=[
         [KeyboardButton(text="Поездки")],
         [KeyboardButton(text="Планирование")],
+        [KeyboardButton(text="Мои достижения"), KeyboardButton(text="Мой прогресс")],
         [KeyboardButton(text="создать стикер")]
     ],
     resize_keyboard=True,
@@ -119,16 +141,158 @@ user_states = {}
 trip_states = {}
 
 
-async def send_tasks_with_status(message: types.Message):
+def get_task_status(user_id: int, task_id: int, date: str) -> bool:
+    # Проверяю статус выполнения задачи
+    try:
+        cursor.execute('''
+            SELECT done FROM daily_tasks_status 
+            WHERE user_id = ? AND task_id = ? AND date = ?
+        ''', (user_id, task_id, date))
+        result = cursor.fetchone()
+        return bool(result[0]) if result else False
+    except Exception as e:
+        logging.error(f"Ошибка при проверке статуса задачи: {e}")
+        return False
+
+
+@dp.message(F.text == "Мой прогресс")
+async def show_progress_handler(message: types.Message):
+    await show_progress(message)
+
+    check_achievements
+
+
+@dp.message(F.text == "Мои достижения")
+async def show_achievements_handler(message: types.Message):
+    await show_achievements(message)
+
+
+def update_user_stats(user_id: int, priority: int = None):
+    # Обновляю статистику пользователя после выполнения задачи
+    today = get_today_date()
+    cursor.execute('SELECT last_completion_date FROM user_stats WHERE user_id = ?', (user_id,))
+    result = cursor.fetchone()
+
+    if result is None:
+        # Новый пользователь
+        cursor.execute('''
+            INSERT INTO user_stats (user_id, tasks_completed, high_priority_completed, streaks, last_completion_date)
+            VALUES (?, 1, ?, 1, ?)
+        ''', (user_id, 1 if priority == 1 else 0, today))
+    else:
+        last_date = result[0]
+        streaks = 1 if last_date != today else 0
+
+        # Обновляю статистику в зависимости от приоритета
+        if priority == 1:
+            cursor.execute('''
+                UPDATE user_stats 
+                SET tasks_completed = tasks_completed + 1,
+                    high_priority_completed = high_priority_completed + 1,
+                    streaks = streaks + ?,
+                    last_completion_date = ?
+                WHERE user_id = ?
+            ''', (streaks, today, user_id))
+        else:
+            cursor.execute('''
+                UPDATE user_stats 
+                SET tasks_completed = tasks_completed + 1,
+                    streaks = streaks + ?,
+                    last_completion_date = ?
+                WHERE user_id = ?
+            ''', (streaks, today, user_id))
+
+    conn.commit()
+
+
+def get_user_tasks(user_id: int) -> list:
+    # Получаю список задач пользователя на сегодня
+    today_date = get_today_date()
+    try:
+        cursor.execute('''
+            SELECT t.id, t.task, t.priority
+            FROM daily_tasks t
+            WHERE t.user_id = ? AND t.date = ?
+            ORDER BY t.priority ASC
+        ''', (user_id, today_date))
+        return cursor.fetchall()
+    except Exception as e:
+        logging.error(f"Ошибка при получении задач пользователя {user_id}: {e}")
+        return []
+
+
+def check_achievements(user_id: int):
+    # Проверяю, какие достижения заработал пользователь
+    cursor.execute('''
+        SELECT tasks_completed, high_priority_completed, streaks 
+        FROM user_stats 
+        WHERE user_id = ?
+    ''', (user_id,))
+
+    stats = cursor.fetchone()
+
+    if not stats:
+        return []
+
+    tasks_completed, high_priority_completed, streaks = stats
+    new_achievements = []
+
+    #  условия для наград
+    achievements = [
+        ("Новичок", "Выполнил первую задачу!", lambda: tasks_completed >= 1),
+        ("Трудяга", "Выполнил 10 задач!", lambda: tasks_completed >= 10),
+        ("Мастер продуктивности", "Выполнил 50 задач!", lambda: tasks_completed >= 50),
+        ("Легенда", "Выполнил 100 задач!", lambda: tasks_completed >= 100),
+        ("Срочник", "Выполнил 5 задач с высоким приоритетом", lambda: high_priority_completed >= 5),
+        ("Герой срочных дел", "Выполнил 20 задач с высоким приоритетом", lambda: high_priority_completed >= 20),
+        ("Серийный исполнитель", "Выполнял задачи 3 дня подряд", lambda: streaks >= 3),
+        ("Недельный чемпион", "Выполнял задачи 7 дней подряд", lambda: streaks >= 7),
+        ("Месяц дисциплины", "Выполнял задачи 30 дней подряд", lambda: streaks >= 30),
+        ("Перфекционист", "Выполнил 10 задач подряд без пропусков", lambda: streaks >= 10)
+    ]
+
+    for name, desc, condition in achievements:
+        # Проверяю, есть ли уже такая награда у пользователя
+        cursor.execute('SELECT 1 FROM user_achievements WHERE user_id = ? AND badge_name = ?', (user_id, name))
+        if not cursor.fetchone() and condition():
+            # Добавляю новую награду
+            cursor.execute('''
+                INSERT INTO user_achievements (user_id, badge_name, badge_description, achieved_at)
+                VALUES (?, ?, ?, ?)
+            ''', (user_id, name, desc, get_today_date()))
+            new_achievements.append((name, desc))
+
+    conn.commit()
+    return new_achievements
+
+
+async def show_achievements(message: types.Message):
+    # Показываю все полученные пользователем награды
     user_id = message.from_user.id
     cursor.execute('''
-        SELECT t.id, t.task, t.priority, s.done 
-        FROM daily_tasks t
-        LEFT JOIN daily_tasks_status s ON t.id = s.task_id AND s.user_id = t.user_id AND s.date = ?
-        WHERE t.date = ?
-    ''', (get_today_date(), get_today_date()))
+        SELECT badge_name, badge_description, achieved_at 
+        FROM user_achievements 
+        WHERE user_id = ?
+        ORDER BY achieved_at DESC
+    ''', (user_id,))
 
-    tasks = cursor.fetchall()
+    achievements = cursor.fetchall()
+
+    if not achievements:
+        await message.reply("У вас пока нет наград. Выполняйте задачи, чтобы получать их!", reply_markup=main_keyboard)
+        return
+
+    text = "🏆 Ваши достижения:\n\n"
+    for i, (name, desc, date) in enumerate(achievements, 1):
+        text += f"{i}. {name} - {desc}\n   🗓 {date}\n\n"
+
+    await message.reply(text, reply_markup=main_keyboard)
+
+
+async def send_tasks_with_status(message: types.Message):
+    user_id = message.from_user.id
+    tasks = get_user_tasks(user_id)
+    today_date = get_today_date()
 
     if not tasks:
         await message.reply(
@@ -137,15 +301,17 @@ async def send_tasks_with_status(message: types.Message):
         )
         return
 
-    text = "Ваши ежедневные дела на сегодня:\n"
-    for i, (task_id, task_text, priority, done) in enumerate(tasks, 1):
+    text = "📝 Ваши ежедневные дела на сегодня:\n\n"
+    for i, (task_id, task_text, priority) in enumerate(tasks, 1):
+        done = get_task_status(user_id, task_id, today_date)
         status = "✅" if done else "❌"
         priority_icon = "🔴" if priority == 1 else "🟡" if priority == 2 else "🟢"
         text += f"{i}. {priority_icon} {task_text} {status}\n"
-    text += "\nЧтобы отметить задачу выполненной, отправьте её номер."
 
+    text += "\nЧтобы отметить задачу выполненной, отправьте её номер."
     await message.reply(text, reply_markup=main_keyboard)
     user_states[user_id] = 'awaiting_action'
+
 
 async def ask_task_priority(message: types.Message, task_text: str):
     keyboard = InlineKeyboardMarkup(inline_keyboard=[
@@ -160,6 +326,7 @@ async def ask_task_priority(message: types.Message, task_text: str):
         "Выберите приоритет задачи:",
         reply_markup=keyboard
     )
+
 
 @dp.callback_query(F.data.startswith("set_priority:"))
 async def set_task_priority(callback: types.CallbackQuery):
@@ -178,7 +345,6 @@ async def set_task_priority(callback: types.CallbackQuery):
     except Exception as e:
         logging.error(f"Ошибка добавления задачи: {e}")
         await callback.message.edit_text("Произошла ошибка при добавлении задачи.")
-
 
 
 #  КАЛЕНДАРЬ
@@ -270,7 +436,7 @@ async def show_calendar(message: types.Message, year: int = None, month: int = N
 
 @dp.callback_query(F.data.startswith("calendar:"))
 async def process_calendar_navigation(callback: types.CallbackQuery):
-    #Обработка переключения месяцев в календаре
+    # Обработка переключения месяцев в календаре
     _, year_month = callback.data.split(":")
     year, month = map(int, year_month.split("-"))
     await callback.message.delete()
@@ -279,7 +445,7 @@ async def process_calendar_navigation(callback: types.CallbackQuery):
 
 @dp.callback_query(F.data.startswith("trip_date:"))
 async def process_date_selection(callback: types.CallbackQuery):
-    #Обработка выбора даты из календаря
+    # Обработка выбора даты из календаря
     _, date_str = callback.data.split(":")
     user_id = callback.from_user.id
 
@@ -343,40 +509,81 @@ def get_task_status(user_id, task_id, date):
     return row[0] if row else 0
 
 
+async def show_progress(message: types.Message):
+    # Показываю прогресс пользователя
+    user_id = message.from_user.id
+    cursor.execute('''
+        SELECT tasks_completed, high_priority_completed, streaks 
+        FROM user_stats 
+        WHERE user_id = ?
+    ''', (user_id,))
+
+    stats = cursor.fetchone()
+
+    if not stats:
+        await message.reply("Вы еще не выполнили ни одной задачи. Начните планировать!", reply_markup=main_keyboard)
+        return
+
+    tasks_completed, high_priority_completed, streaks = stats
+
+    text = (
+        "📊 Ваш прогресс:\n\n"
+        f"✅ Всего выполнено задач: {tasks_completed}\n"
+        f"🔴 Задач с высоким приоритетом: {high_priority_completed}\n"
+        f"🔥 Текущая серия: {streaks} дней подряд\n\n"
+        "Продолжайте в том же духе!"
+    )
+
+    await message.reply(text, reply_markup=main_keyboard)
+
+
 def set_task_status(user_id, task_id, date, done):
     try:
-        cursor.execute('INSERT INTO daily_tasks_status (user_id, task_id, date, done) VALUES (?, ?, ?, ?)',
-                       (user_id, task_id, date, done))
-    except sqlite3.IntegrityError:
-        cursor.execute('UPDATE daily_tasks_status SET done = ? WHERE user_id = ? AND task_id = ? AND date = ?',
-                       (done, user_id, task_id, date))
-    conn.commit()
+        cursor.execute('''
+            INSERT OR REPLACE INTO daily_tasks_status 
+            (user_id, task_id, date, done) 
+            VALUES (?, ?, ?, ?)
+        ''', (user_id, task_id, date, done))
+
+        # Если задача выполнена, обновляем статистику
+        if done:
+            priority = get_task_priority(task_id)
+            update_user_stats(user_id, priority)
+            new_badges = check_achievements(user_id)
+            return True, new_badges
+        return True, []
+    except Exception as e:
+        logging.error(f"Ошибка при обновлении статуса задачи: {e}")
+        return False, []
 
 
 async def send_tasks_with_status(message: types.Message):
     user_id = message.from_user.id
-    tasks = get_user_tasks(user_id)
-    date = get_today_date()
-    today_tasks = []
+    today_date = get_today_date()
 
-    for task in tasks:
-        task_id, task_text = task
-        done = get_task_status(user_id, task_id, date)
-        today_tasks.append((task_id, task_text, done))
+    cursor.execute('''
+        SELECT t.id, t.task, t.priority, s.done 
+        FROM daily_tasks t
+        LEFT JOIN daily_tasks_status s ON t.id = s.task_id AND s.user_id = t.user_id AND s.date = ?
+        WHERE t.user_id = ? AND t.date = ?
+    ''', (today_date, user_id, today_date))
 
-    if not today_tasks:
+    tasks = cursor.fetchall()
+
+    if not tasks:
         await message.reply(
             "У вас пока нет ежедневных дел на сегодня. Пожалуйста, добавьте задачу, отправив текст задачи.",
             reply_markup=main_keyboard
         )
-        user_states[user_id] = 'awaiting_task'
         return
 
     text = "Ваши ежедневные дела на сегодня:\n"
-    for i, (task_id, task_text, done) in enumerate(today_tasks, 1):
+    for i, (task_id, task_text, priority, done) in enumerate(tasks, 1):
         status = "✅" if done else "❌"
-        text += f"{i}. {task_text} {status}\n"
-    text += "\nЧтобы отметить задачу выполненной, отправьте её номер.\nЧтобы добавить новую задачу, отправьте текст задачи."
+        priority_icon = "🔴" if priority == 1 else "🟡" if priority == 2 else "🟢"
+        text += f"{i}. {priority_icon} {task_text} {status}\n"
+    text += "\nЧтобы отметить задачу выполненной, отправьте её номер."
+
     await message.reply(text, reply_markup=main_keyboard)
     user_states[user_id] = 'awaiting_action'
 
@@ -435,8 +642,9 @@ async def show_upcoming_trips(message: types.Message):
 
 @dp.message(F.text == "Добавить поездку")
 async def add_trip(message: types.Message):
-    #Начало добавления поездки - показываю календарь
+    # Начало добавления поездки - показываю календарь
     await show_calendar(message.chat.id)
+
 
 @dp.message(F.text == "Добавить задачу")
 async def add_task_handler(message: types.Message):
@@ -444,13 +652,18 @@ async def add_task_handler(message: types.Message):
     await message.reply("Пожалуйста, введите текст задачи:", reply_markup=main_keyboard)
 
 
+def get_task_priority(task_id: int) -> int:
+    # Возвращаю приоритет задачи
+    cursor.execute('SELECT priority FROM daily_tasks WHERE id = ?', (task_id,))
+    result = cursor.fetchone()
+    return result[0] if result else 3
+
+
 @dp.message()
 async def handle_buttons(message: types.Message):
     user_id = message.from_user.id
     text = message.text.strip()
     logging.info(f"Received message: {text} from user: {user_id}")
-    user_id = message.from_user.id
-    text = message.text.strip()
 
     if text == "Планирование":
         user_states[user_id] = None
@@ -465,6 +678,10 @@ async def handle_buttons(message: types.Message):
         await show_upcoming_trips(message)
         return
 
+    elif text == "Посмотреть список дел":
+        await send_tasks_with_status(message)
+        return
+
     elif text == "Назад":
         await message.reply("Возвращаемся в главное меню", reply_markup=main_keyboard)
         return
@@ -477,6 +694,7 @@ async def handle_buttons(message: types.Message):
         user_states.pop(user_id)
         return
 
+
     elif state == 'awaiting_action':
         try:
             task_index = int(text) - 1
@@ -486,27 +704,25 @@ async def handle_buttons(message: types.Message):
                 today_date = get_today_date()
                 current_status = get_task_status(user_id, task_id, today_date)
                 new_status = 1 if current_status == 0 else 0
-                set_task_status(user_id, task_id, today_date, new_status)
-                status_text = "выполнена" if new_status == 1 else "не выполнена"
-                await message.reply(f"Задача '{task_text}' отмечена как {status_text}.", reply_markup=main_keyboard)
+                success, new_badges = set_task_status(user_id, task_id, today_date, new_status)
+                if success:
+                    status_text = "выполнена ✅" if new_status == 1 else "не выполнена ❌"
+                    reply_text = f"Задача '{task_text}' отмечена как {status_text}."
+                    if new_status == 1 and new_badges:
+                        reply_text += "\n\n🎉 Новые достижения:\n"
+                        for name, desc in new_badges:
+                            reply_text += f"🏅 {name}: {desc}\n"
+                    await message.reply(reply_text, reply_markup=main_keyboard)
+                else:
+                    await message.reply("Не удалось обновить статус задачи.", reply_markup=main_keyboard)
                 user_states.pop(user_id)
             else:
-                await message.reply("Неверный номер задачи. Пожалуйста, попробуйте снова.", reply_markup=main_keyboard)
+                await message.reply("Неверный номер задачи.", reply_markup=main_keyboard)
         except ValueError:
             await message.reply("Пожалуйста, введите номер задачи.", reply_markup=main_keyboard)
         return
 
-    if text == "Добавить задачу":
-        await add_task_handler(message)
-        return
-
-
-    elif text.lower() == "посмотреть список дел":
-        await send_tasks_with_status(message)
-        user_states[user_id] = 'awaiting_action'
-        return
-
-    # Обработка ввода поездки (время и адрес)
+    # Обработка состояния поездки
     if user_id in trip_states:
         state = trip_states[user_id]
         step = state['step']
@@ -526,28 +742,30 @@ async def handle_buttons(message: types.Message):
             data['address'] = text
             data['created_at'] = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
 
-            # Сохраняю поездку
-            cursor.execute('''
-                INSERT INTO trips (user_id, destination, date, time, address, created_at)
-                VALUES (?, ?, ?, ?, ?, ?)
-            ''', (user_id, text, data['date'], data['time'], data['address'], data['created_at']))
-            conn.commit()
+            try:
+                cursor.execute('''
+                    INSERT INTO trips (user_id, destination, date, time, address, created_at)
+                    VALUES (?, ?, ?, ?, ?, ?)
+                ''', (user_id, text, data['date'], data['time'], data['address'], data['created_at']))
+                conn.commit()
 
-            # Удаляю состояние
-            trip_states.pop(user_id)
-
-            # Формирую ссылку на карту
-            map_url = f"https://yandex.ru/maps/?text={text.replace(' ', '+')}"
-
-            await message.reply(
-                f"🚗 Поездка добавлена!\n"
-                f"📅 Дата: {data['date']}\n"
-                f"⏰ Время: {data['time']}\n"
-                f"📍 Адрес: {data['address']}\n\n"
-                f"🗺 Открыть на карте: {map_url}",
-                reply_markup=main_keyboard
-            )
+                map_url = f"https://yandex.ru/maps/?text={text.replace(' ', '+')}"
+                await message.reply(
+                    f"🚗 Поездка добавлена!\n"
+                    f"📅 Дата: {data['date']}\n"
+                    f"⏰ Время: {data['time']}\n"
+                    f"📍 Адрес: {data['address']}\n\n"
+                    f"🗺 Открыть на карте: {map_url}",
+                    reply_markup=main_keyboard
+                )
+            except Exception as e:
+                logging.error(f"Ошибка при сохранении поездки: {e}")
+                await message.reply("Произошла ошибка при сохранении поездки.", reply_markup=main_keyboard)
+            finally:
+                trip_states.pop(user_id)
             return
+
+    await message.reply("Я не понимаю эту команду.", reply_markup=main_keyboard)
 
 
 async def reminder_loop(bot: Bot):
@@ -575,7 +793,7 @@ async def reminder_loop(bot: Bot):
         now = datetime.now()
         today = get_today_date()
 
-        # Получаем все незавершенные задачи всех пользователей
+        # Получаю все незавершенные задачи всех пользователей
         cursor.execute('''
             SELECT t.user_id, t.id, t.task, t.priority, s.done 
             FROM daily_tasks t
@@ -634,6 +852,7 @@ async def reminder_loop(bot: Bot):
 
         await asyncio.sleep(10)  # Проверяю каждую минуту
 
+
 async def trip_reminder_loop(bot: Bot):
     while True:
         await asyncio.sleep(60)
@@ -678,7 +897,19 @@ if __name__ == '__main__':
     async def main():
         asyncio.create_task(reminder_loop(bot))
         asyncio.create_task(trip_reminder_loop(bot))
-        await dp.start_polling(bot)
+        try:
+            await dp.start_polling(bot)
+        except Exception as e:
+            logging.error(f"Ошибка в работе бота: {e}")
+        finally:
+            await bot.session.close()
 
 
-    asyncio.run(main())
+    try:
+        asyncio.run(main())
+    except KeyboardInterrupt:
+        logging.info("Бот остановлен пользователем")
+    except Exception as e:
+        logging.error(f"Фатальная ошибка: {e}")
+    finally:
+        conn.close()
