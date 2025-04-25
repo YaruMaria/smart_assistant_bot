@@ -698,7 +698,6 @@ async def handle_buttons(message: types.Message):
         user_states.pop(user_id)
         return
 
-
     elif state == 'awaiting_action':
         try:
             task_index = int(text) - 1
@@ -729,14 +728,15 @@ async def handle_buttons(message: types.Message):
     # Обработка состояния поездки
     if user_id in trip_states:
         state = trip_states[user_id]
-        step = state['step']
-        data = state['data']
+        step = state.get('step')
+        data = state.get('data', {})
 
         if step == 'awaiting_time':
             try:
+
                 datetime.strptime(text, '%H:%M')
                 data['time'] = text
-                state['step'] = 'awaiting_address'
+                trip_states[user_id]['step'] = 'awaiting_address'
                 await message.reply("Введите адрес или место назначения:", reply_markup=back_keyboard)
             except ValueError:
                 await message.reply("Неверный формат времени. Попробуйте снова (ЧЧ:ММ).", reply_markup=back_keyboard)
@@ -744,29 +744,32 @@ async def handle_buttons(message: types.Message):
 
         elif step == 'awaiting_address':
             data['address'] = text
+            data['destination'] = text
             data['created_at'] = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
 
             try:
                 cursor.execute('''
                     INSERT INTO trips (user_id, destination, date, time, address, created_at)
                     VALUES (?, ?, ?, ?, ?, ?)
-                ''', (user_id, text, data['date'], data['time'], data['address'], data['created_at']))
+                ''', (user_id, data['destination'], data['date'], data['time'], data['address'], data['created_at']))
                 conn.commit()
 
-                map_url = f"https://yandex.ru/maps/?text={text.replace(' ', '+')}"
+                map_url = f"https://yandex.ru/maps/?text={data['address'].replace(' ', '+')}"
                 await message.reply(
                     f"🚗 Поездка добавлена!\n"
+                    f"📍 Пункт назначения: {data['destination']}\n"
                     f"📅 Дата: {data['date']}\n"
                     f"⏰ Время: {data['time']}\n"
-                    f"📍 Адрес: {data['address']}\n\n"
-                    f"🗺 Открыть на карте: {map_url}",
-                    reply_markup=main_keyboard
+                    f"🗺 Адрес: {data['address']}\n\n"
+                    f"[Открыть на карте]({map_url})",
+                    reply_markup=main_keyboard,
+                    disable_web_page_preview=True
                 )
             except Exception as e:
                 logging.error(f"Ошибка при сохранении поездки: {e}")
                 await message.reply("Произошла ошибка при сохранении поездки.", reply_markup=main_keyboard)
             finally:
-                trip_states.pop(user_id)
+                trip_states.pop(user_id, None)
             return
 
     await message.reply("Я не понимаю эту команду.", reply_markup=main_keyboard)
