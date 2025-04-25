@@ -4,3 +4,4 @@ Pillow==11.2.1
 sqlalchemy==2.0.40
 urllib3==1.26.6
 python-telegram-bot==22.0
+python==3.10
