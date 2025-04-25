@@ -20,14 +20,14 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 # Настройка базы данных
-DATABASE_URL = "sqlite:///stickers.db"
+DATABASE_URL = "sqlite:///sticker.db"
 Base = declarative_base()
 engine = create_engine(DATABASE_URL)
 Session = sessionmaker(bind=engine, expire_on_commit=False)
 
 
 class User(Base):
-    __tablename__ = 'users'
+    __tablename__ = 'user'
 
     id = Column(Integer, primary_key=True)
     telegram_id = Column(Integer, unique=True, nullable=False)
