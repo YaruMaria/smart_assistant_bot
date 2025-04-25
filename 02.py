@@ -10,7 +10,7 @@ from aiogram.utils.keyboard import InlineKeyboardBuilder
 from stic import cmd_start as stic_start, photo_handler as stic_photo_handler, caption_handler as stic_caption_handler, \
     user_data
 from stic import user_data as stic_user_data
-
+from aiohttp import ClientSession
 from config import BOT_TOKEN
 
 # делаю защиту против рекламы и т.д
@@ -892,18 +892,18 @@ async def trip_reminder_loop(bot: Bot):
 
 
 if __name__ == '__main__':
-    bot = Bot(token=BOT_TOKEN)
-
-
     async def main():
-        asyncio.create_task(reminder_loop(bot))
-        asyncio.create_task(trip_reminder_loop(bot))
-        try:
-            await dp.start_polling(bot)
-        except Exception as e:
-            logging.error(f"Ошибка в работе бота: {e}")
-        finally:
-            await bot.session.close()
+        async with ClientSession() as session:
+            bot = Bot(token=BOT_TOKEN, session=session)
+            asyncio.create_task(reminder_loop(bot))
+            asyncio.create_task(trip_reminder_loop(bot))
+
+            try:
+                await dp.start_polling(bot)
+            except Exception as e:
+                logging.error(f"Ошибка в работе бота: {e}")
+            finally:
+                await bot.session.close()
 
 
     try:
