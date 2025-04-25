@@ -9,7 +9,8 @@ from aiogram.utils.keyboard import InlineKeyboardBuilder
 from stic import cmd_start as stic_start, photo_handler as stic_photo_handler, caption_handler as stic_caption_handler, \
     user_data
 from stic import user_data as stic_user_data
-
+from dotenv import load_dotenv
+import os
 from config import BOT_TOKEN
 
 # делаю защиту против рекламы и т.д
@@ -19,7 +20,10 @@ TOKEN = '7585920451:AAFr1eFDKgH37GoqztPry9uw0XHWUTcVCrM'
 url = f'https://api.telegram.org/bot{TOKEN}/deleteWebhook'
 response = requests.get(url)
 print(response.json())
-
+load_dotenv()
+TOKEN = os.getenv('BOT_TOKEN')
+if not TOKEN:
+    raise ValueError("Токен не найден!")
 logging.basicConfig(
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s', level=logging.INFO
 )
