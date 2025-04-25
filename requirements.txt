@@ -1,0 +1,4 @@
+aiogram>=3.0.0
+requests>=2.32.3
+Pillow>=11.2.1
+sqlalchemy>=2.0.40
