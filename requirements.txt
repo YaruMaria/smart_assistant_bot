@@ -1,6 +1,4 @@
-aiogram==2.19  
-requests==2.32.3
-Pillow==11.2.1
-sqlalchemy==2.0.40
-urllib3==1.26.6
-python-telegram-bot==22.0
+aiogram>=3.0.0
+requests>=2.32.3
+Pillow>=11.2.1
+sqlalchemy>=2.0.40
