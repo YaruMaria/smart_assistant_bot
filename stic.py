@@ -27,7 +27,7 @@ Session = sessionmaker(bind=engine, expire_on_commit=False)
 
 
 class User(Base):
-    __tablename__ = 'user'
+    __tablename__ = 'users'
 
     id = Column(Integer, primary_key=True)
     telegram_id = Column(Integer, unique=True, nullable=False)
