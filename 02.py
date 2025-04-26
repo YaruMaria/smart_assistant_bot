@@ -1,3 +1,4 @@
+# Рабочая версия!!!!
 import asyncio
 import logging
 import sqlite3
@@ -9,8 +10,7 @@ from aiogram.utils.keyboard import InlineKeyboardBuilder
 from stic import cmd_start as stic_start, photo_handler as stic_photo_handler, caption_handler as stic_caption_handler, \
     user_data
 from stic import user_data as stic_user_data
-from dotenv import load_dotenv
-import os
+
 from config import BOT_TOKEN
 
 # делаю защиту против рекламы и т.д
@@ -20,10 +20,7 @@ TOKEN = '7585920451:AAFr1eFDKgH37GoqztPry9uw0XHWUTcVCrM'
 url = f'https://api.telegram.org/bot{TOKEN}/deleteWebhook'
 response = requests.get(url)
 print(response.json())
-load_dotenv()
-TOKEN = os.getenv('BOT_TOKEN')
-if not TOKEN:
-    raise ValueError("Токен не найден!")
+
 logging.basicConfig(
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s', level=logging.INFO
 )
@@ -467,9 +464,6 @@ async def process_date_selection(callback: types.CallbackQuery):
         f"⏰ Теперь введите время поездки в формате ЧЧ:ММ (например, 14:30):",
         reply_markup=back_keyboard
     )
-@dp.message(F.text == "Поездки")
-async def trips_handler(message: types.Message):
-    await message.reply("Вы выбрали 'Поездки'. Что вы хотите сделать?", reply_markup=trips_keyboard)
 
 
 @dp.message(F.text == "Добавить поездку")
@@ -617,114 +611,40 @@ async def help_command(message: types.Message):
     await message.reply("Выберите опцию:", reply_markup=main_keyboard)
 
 
+async def show_upcoming_trips(message: types.Message):
+    user_id = message.from_user.id
+    today = datetime.now().strftime('%Y-%m-%d')
 
-@dp.message(F.text == "Поездки")
-async def trips_handler(message: types.Message):
-    await message.reply("Вы выбрали 'Поездки'. Что вы хотите сделать?", reply_markup=trips_keyboard)
+    cursor.execute('''
+        SELECT destination, date, time, address 
+        FROM trips 
+        WHERE user_id = ? AND date >= ?
+        ORDER BY date, time
+    ''', (user_id, today))
+
+    trips = cursor.fetchall()
+
+    if not trips:
+        await message.reply("У вас нет запланированных поездок.", reply_markup=trips_keyboard)
+        return
+
+    response = "Ваши запланированные поездки:\n\n"
+    for i, (destination, date, time, address) in enumerate(trips, 1):
+        map_url = f"https://yandex.ru/maps/?text={address.replace(' ', '+')}"
+        response += (
+            f"{i}. 🚗 {destination}\n"
+            f"   📅 {date} ⏰ {time}\n"
+            f"   📍 {address}\n"
+            f"   🗺 [Открыть на карте]({map_url})\n\n"
+        )
+
+    await message.reply(response, reply_markup=trips_keyboard, disable_web_page_preview=True)
+
 
 @dp.message(F.text == "Добавить поездку")
-async def add_trip_handler(message: types.Message):
-    await show_calendar(message)
-
-@dp.callback_query(F.data.startswith("trip_date:"))
-async def process_date_selection(callback: types.CallbackQuery):
-    _, date_str = callback.data.split(":")
-    user_id = callback.from_user.id
-
-    trip_states[user_id] = {
-        'step': 'awaiting_time',
-        'data': {
-            'date': date_str
-        }
-    }
-
-    await callback.message.delete()
-    await callback.message.answer(
-        f"📅 Выбрана дата: {date_str}\n"
-        f"⏰ Теперь введите время поездки в формате ЧЧ:ММ (например, 14:30):",
-        reply_markup=back_keyboard
-    )
-
-@dp.message(F.text.regexp(r'^([01]?[0-9]|2[0-3]):[0-5][0-9]$'))
-async def handle_time_input(message: types.Message):
-    user_id = message.from_user.id
-
-    if user_id not in trip_states or trip_states[user_id]['step'] != 'awaiting_time':
-        await message.reply("Пожалуйста, начните добавление поездки сначала", reply_markup=main_keyboard)
-        return
-
-    time_str = message.text
-    trip_states[user_id]['data']['time'] = time_str
-    trip_states[user_id]['step'] = 'awaiting_destination'
-
-    await message.reply(
-        "🕒 Время принято!\n"
-        "🏙 Теперь введите пункт назначения (например, Москва):",
-        reply_markup=back_keyboard
-    )
-
-@dp.message()
-async def handle_destination_input(message: types.Message):
-    user_id = message.from_user.id
-
-    if user_id not in trip_states or trip_states[user_id]['step'] != 'awaiting_destination':
-        return
-
-    destination = message.text
-    trip_states[user_id]['data']['destination'] = destination
-    trip_states[user_id]['step'] = 'awaiting_address'
-
-    await message.reply(
-        "📍 Теперь введите точный адрес (например, ул. Ленина, 10):",
-        reply_markup=back_keyboard
-    )
-
-@dp.message()
-async def handle_address_input(message: types.Message):
-    user_id = message.from_user.id
-
-    if user_id not in trip_states or trip_states[user_id]['step'] != 'awaiting_address':
-        return
-
-    address = message.text
-    trip_data = trip_states[user_id]['data']
-
-    try:
-        cursor.execute('''
-            INSERT INTO trips (user_id, destination, date, time, address, created_at)
-            VALUES (?, ?, ?, ?, ?, ?)
-        ''', (
-            user_id,
-            trip_data['destination'],
-            trip_data['date'],
-            trip_data['time'],
-            address,
-            datetime.now().strftime('%Y-%m-%d %H:%M:%S')
-        ))
-        conn.commit()
-
-        map_url = f"https://yandex.ru/maps/?text={address.replace(' ', '+')}"
-        await message.reply(
-            "✅ Поездка успешно добавлена!\n\n"
-            f"🏙 Пункт назначения: {trip_data['destination']}\n"
-            f"📅 Дата: {trip_data['date']}\n"
-            f"⏰ Время: {trip_data['time']}\n"
-            f"📍 Адрес: {address}\n\n"
-            f"🗺 <a href='{map_url}'>Просмотреть на карте</a>",
-            reply_markup=main_keyboard,
-            parse_mode="HTML",
-            disable_web_page_preview=False
-        )
-    except Exception as e:
-        logging.error(f"Ошибка при сохранении поездки: {e}")
-        await message.reply(
-            "❌ Произошла ошибка при сохранении поездки",
-            reply_markup=main_keyboard
-        )
-    finally:
-        trip_states.pop(user_id, None)
-
-
+async def add_trip(message: types.Message):
+    # Начало добавления поездки - показываю календарь
+    await show_calendar(message.chat.id)
 
 
 @dp.message(F.text == "Добавить задачу")
@@ -751,6 +671,14 @@ async def handle_buttons(message: types.Message):
         await message.reply("Вы выбрали 'Планирование'.", reply_markup=planning_keyboard)
         return
 
+    elif text == "Поездки":
+        await message.reply("Вы выбрали 'Поездки'. Что вы хотите сделать?", reply_markup=trips_keyboard)
+        return
+
+    elif text == "Посмотреть мои поездки":
+        await show_upcoming_trips(message)
+        return
+
     elif text == "Посмотреть список дел":
         await send_tasks_with_status(message)
         return
@@ -766,6 +694,7 @@ async def handle_buttons(message: types.Message):
         await ask_task_priority(message, text)
         user_states.pop(user_id)
         return
+
 
     elif state == 'awaiting_action':
         try:
@@ -794,7 +723,52 @@ async def handle_buttons(message: types.Message):
             await message.reply("Пожалуйста, введите номер задачи.", reply_markup=main_keyboard)
         return
 
+    # Обработка состояния поездки
+    if user_id in trip_states:
+        state = trip_states[user_id]
+        step = state['step']
+        data = state['data']
+
+        if step == 'awaiting_time':
+            try:
+                datetime.strptime(text, '%H:%M')
+                data['time'] = text
+                state['step'] = 'awaiting_address'
+                await message.reply("Введите адрес или место назначения:", reply_markup=back_keyboard)
+            except ValueError:
+                await message.reply("Неверный формат времени. Попробуйте снова (ЧЧ:ММ).", reply_markup=back_keyboard)
+            return
+
+        elif step == 'awaiting_address':
+            data['address'] = text
+            data['created_at'] = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+
+            try:
+                cursor.execute('''
+                    INSERT INTO trips (user_id, destination, date, time, address, created_at)
+                    VALUES (?, ?, ?, ?, ?, ?)
+                ''', (user_id, text, data['date'], data['time'], data['address'], data['created_at']))
+                conn.commit()
+
+                map_url = f"https://yandex.ru/maps/?text={text.replace(' ', '+')}"
+                await message.reply(
+                    f"🚗 Поездка добавлена!\n"
+                    f"📅 Дата: {data['date']}\n"
+                    f"⏰ Время: {data['time']}\n"
+                    f"📍 Адрес: {data['address']}\n\n"
+                    f"🗺 Открыть на карте: {map_url}",
+                    reply_markup=main_keyboard
+                )
+            except Exception as e:
+                logging.error(f"Ошибка при сохранении поездки: {e}")
+                await message.reply("Произошла ошибка при сохранении поездки.", reply_markup=main_keyboard)
+            finally:
+                trip_states.pop(user_id)
+            return
+
     await message.reply("Я не понимаю эту команду.", reply_markup=main_keyboard)
+
+
 async def reminder_loop(bot: Bot):
     user_last_meme = {}
     meme_messages = [
