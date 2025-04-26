@@ -46,8 +46,7 @@ CREATE TABLE IF NOT EXISTS daily_tasks (
     user_id INTEGER,
     task TEXT,
     date TEXT,
-    priority INTEGER DEFAULT 3,  -- 1: высокая, 2: средняя, 3: низкая
-    UNIQUE(user_id, task)
+    priority INTEGER DEFAULT 3  -- 1: высокая, 2: средняя, 3: низкая
 )
 ''')
 
@@ -94,6 +93,8 @@ CREATE TABLE IF NOT EXISTS user_stats (
     last_completion_date TEXT
 );
 ''')
+
+
 
 conn.commit()
 
@@ -331,21 +332,36 @@ async def ask_task_priority(message: types.Message, task_text: str):
 
 @dp.callback_query(F.data.startswith("set_priority:"))
 async def set_task_priority(callback: types.CallbackQuery):
-    _, task_text, priority = callback.data.split(":")
-    user_id = callback.from_user.id
-    today_date = get_today_date()
-
     try:
-        cursor.execute(
-            'INSERT INTO daily_tasks (user_id, task, date, priority) VALUES (?, ?, ?, ?)',
-            (user_id, task_text, today_date, int(priority)))
+        _, task_text, priority = callback.data.split(":")
+        user_id = callback.from_user.id
+        today_date = get_today_date()
+
+        # Проверяю только задачи на сегодня
+        cursor.execute('''
+            SELECT id FROM daily_tasks 
+            WHERE user_id = ? AND task = ? AND date = ?
+        ''', (user_id, task_text, today_date))
+
+        if cursor.fetchone():
+            await callback.message.edit_text("❌ Такая задача уже есть на сегодня!")
+            return
+
+        # Добавляю задачу
+        cursor.execute('''
+            INSERT INTO daily_tasks (user_id, task, date, priority)
+            VALUES (?, ?, ?, ?)
+        ''', (user_id, task_text, today_date, int(priority)))
         conn.commit()
-        await callback.message.edit_text(f"Задача '{task_text}' добавлена с приоритетом {priority}!")
-    except sqlite3.IntegrityError:
-        await callback.message.edit_text("Такая задача уже существует.")
+
+        await callback.message.edit_text(f"✅ Задача добавлена: {task_text} (Приоритет: {priority})")
+
+    except sqlite3.Error as e:
+        logging.error(f"Database error: {e}")
+        await callback.message.edit_text("⚠️ Ошибка базы данных при добавлении задачи")
     except Exception as e:
-        logging.error(f"Ошибка добавления задачи: {e}")
-        await callback.message.edit_text("Произошла ошибка при добавлении задачи.")
+        logging.error(f"Unexpected error: {e}")
+        await callback.message.edit_text("⚠️ Непредвиденная ошибка при добавлении задачи")
 
 
 #  КАЛЕНДАРЬ
@@ -770,8 +786,8 @@ async def handle_buttons(message: types.Message):
 
 
 async def reminder_loop(bot: Bot):
-    user_last_meme = {}
-    meme_messages = [
+    # список мемов сюда и сделала его постоянным
+    MEME_MESSAGES = [
         {"text": "⏰ Осталось совсем мало времени! Поторопись!", "photo": "https://ltdfoto.ru/image/s4WGxu"},
         {"text": "🔥 Время тикает! Не откладывай на потом!", "photo": "https://ltdfoto.ru/image/s4WQ6Z"},
         {"text": "🚀 Ты можешь это сделать! Осталось совсем немного!",
@@ -780,23 +796,16 @@ async def reminder_loop(bot: Bot):
         {"text": "Помни об этом!", "photo": "https://ltdfoto.ru/images/2025/04/20/DI-KAPRIO-1.jpg"}
     ]
 
-    # Интервалы напоминаний для каждого приоритета
-    priority_intervals = {
-        1: 60 * 60,
-        2: 2 * 60 * 60,
-        3: 3 * 60 * 60
-    }
-
-    # Время последнего напоминания для каждой задачи каждого пользователя
-    last_reminder_time = {}
+    # Словарь для хранения состояния по пользователям
+    user_meme_state = {}
 
     while True:
         now = datetime.now()
         today = get_today_date()
 
-        # Получаю все незавершенные задачи всех пользователей
+        # Получаю все незавершенные задачи
         cursor.execute('''
-            SELECT t.user_id, t.id, t.task, t.priority, s.done 
+            SELECT t.user_id, t.id, t.task, t.priority
             FROM daily_tasks t
             LEFT JOIN daily_tasks_status s ON t.id = s.task_id AND s.user_id = t.user_id AND s.date = ?
             WHERE t.date = ? AND (s.done = 0 OR s.done IS NULL)
@@ -804,55 +813,45 @@ async def reminder_loop(bot: Bot):
 
         tasks = cursor.fetchall()
 
-        for user_id, task_id, task_text, priority, _ in tasks:
-            # Проверяю, нужно ли отправлять напоминание для этой задачи
-            last_time = last_reminder_time.get((user_id, task_id), datetime.min)
-            time_since_last = (now - last_time).total_seconds()
+        for user_id, task_id, task_text, priority in tasks:
+            # Инициализирую состояние пользователя, если нужно
+            if user_id not in user_meme_state:
+                user_meme_state[user_id] = {
+                    'last_meme_index': 0,
+                    'last_sent_time': None
+                }
 
-            if time_since_last >= priority_intervals[priority]:
-                try:
-                    if user_id not in user_last_meme:
-                        user_last_meme[user_id] = {'last_type': 'text', 'meme_index': 0}
+            # Проверяю, нужно ли отправлять напоминание
+            last_sent = user_meme_state[user_id]['last_sent_time']
+            if last_sent and (now - last_sent).total_seconds() < 3600:  # 1 час между напоминаниями
+                continue
 
-                    # Определяю тип сообщения (текст или мем)
-                    if user_last_meme[user_id]['last_type'] == 'text':
-                        meme_index = user_last_meme[user_id]['meme_index']
-                        meme = meme_messages[meme_index]
+            # Получаю следующий мем
+            meme_index = user_meme_state[user_id]['last_meme_index']
+            meme = MEME_MESSAGES[meme_index]
 
-                        try:
-                            await bot.send_photo(
-                                user_id,
-                                photo=meme["photo"],
-                                caption=f"{meme['text']}\n\nЗадача: {task_text}\nПриоритет: {'🔴 Высокий' if priority == 1 else '🟡 Средний' if priority == 2 else '🟢 Низкий'}",
-                                reply_markup=main_keyboard
-                            )
-                        except Exception as e:
-                            logging.error(f"Ошибка отправки мема: {e}")
-                            await bot.send_message(
-                                user_id,
-                                f"{meme['text']}\n\nЗадача: {task_text}\nПриоритет: {'🔴 Высокий' if priority == 1 else '🟡 Средний' if priority == 2 else '🟢 Низкий'}",
-                                reply_markup=main_keyboard
-                            )
+            try:
+                # отправдяю мем
+                await bot.send_photo(
+                    user_id,
+                    photo=meme["photo"],
+                    caption=f"{meme['text']}\n\nЗадача: {task_text}\nПриоритет: {'🔴 Высокий' if priority == 1 else '🟡 Средний' if priority == 2 else '🟢 Низкий'}",
+                    reply_markup=main_keyboard
+                )
+            except Exception as e:
+                # Если не получилось отправить фото, отправляю текстовое сообщение
+                logging.error(f"Ошибка отправки мема: {e}")
+                await bot.send_message(
+                    user_id,
+                    f"{meme['text']}\n\nЗадача: {task_text}\nПриоритет: {'🔴 Высокий' if priority == 1 else '🟡 Средний' if priority == 2 else '🟢 Низкий'}",
+                    reply_markup=main_keyboard
+                )
 
-                        user_last_meme[user_id]['meme_index'] = (meme_index + 1) % len(meme_messages)
-                        user_last_meme[user_id]['last_type'] = 'photo'
-                    else:
-                        await bot.send_message(
-                            user_id,
-                            f"🔔 Напоминание о задаче:\n{task_text}\nПриоритет: {'🔴 Высокий' if priority == 1 else '🟡 Средний' if priority == 2 else '🟢 Низкий'}",
-                            reply_markup=main_keyboard
-                        )
-                        user_last_meme[user_id]['last_type'] = 'text'
+            # Обновляю состояние
+            user_meme_state[user_id]['last_meme_index'] = (meme_index + 1) % len(MEME_MESSAGES)
+            user_meme_state[user_id]['last_sent_time'] = now
 
-                    # Обновляю время последнего напоминания
-                    last_reminder_time[(user_id, task_id)] = now
-
-                except Exception as e:
-                    logging.error(f"Ошибка напоминания для {user_id}: {e}")
-                    user_last_meme[user_id] = {'last_type': 'text', 'meme_index': 0}
-
-        await asyncio.sleep(10)  # Проверяю каждую минуту
-
+        await asyncio.sleep(60)  # Проверяю каждую минуту
 
 async def trip_reminder_loop(bot: Bot):
     while True:
