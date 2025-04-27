@@ -94,8 +94,6 @@ CREATE TABLE IF NOT EXISTS user_stats (
 );
 ''')
 
-
-
 conn.commit()
 
 # Основная клавиатура
@@ -138,6 +136,43 @@ back_keyboard = ReplyKeyboardMarkup(
     one_time_keyboard=True
 )
 
+
+# Добавляю в раздел клавиатур
+def get_time_selection_keyboard(hours=None, minutes=None):
+    # клавиатуры для выбора времени
+    if hours is None and minutes is None:
+        # Основная клавиатура выбора времени
+        builder = InlineKeyboardBuilder()
+        builder.row(
+            InlineKeyboardButton(text="Часы: --", callback_data="time_hours"),
+            InlineKeyboardButton(text="Минуты: --", callback_data="time_minutes")
+        )
+        builder.row(InlineKeyboardButton(text="✅ Готово", callback_data="time_done"))
+        return builder.as_markup()
+
+    if hours is not None:
+        # Клавиатура выбора часов
+        builder = InlineKeyboardBuilder()
+        for i in range(0, 24, 6):
+            buttons = [
+                InlineKeyboardButton(text=f"{h:02d}", callback_data=f"set_hour_{h:02d}")
+                for h in range(i, i + 6)
+            ]
+            builder.row(*buttons)
+        builder.row(InlineKeyboardButton(text="⬅️ Назад", callback_data="time_back"))
+        return builder.as_markup()
+
+    if minutes is not None:
+        # Клавиатура выбора минут
+        builder = InlineKeyboardBuilder()
+        for i in range(0, 60, 10):
+            buttons = [
+                InlineKeyboardButton(text=f"{m:02d}", callback_data=f"set_min_{m:02d}")
+                for m in range(i, i + 10, 5)
+            ]
+            builder.row(*buttons)
+        builder.row(InlineKeyboardButton(text="⬅️ Назад", callback_data="time_back"))
+        return builder.as_markup()
 # Хранилище состояния ожидания ввода задачи у пользователя
 user_states = {}
 trip_states = {}
@@ -462,23 +497,116 @@ async def process_calendar_navigation(callback: types.CallbackQuery):
 
 @dp.callback_query(F.data.startswith("trip_date:"))
 async def process_date_selection(callback: types.CallbackQuery):
-    # Обработка выбора даты из календаря
     _, date_str = callback.data.split(":")
     user_id = callback.from_user.id
 
-    # Сохраняю дату и переходим к следующему шагу
     trip_states[user_id] = {
-        'step': 'awaiting_time',
+        'step': 'selecting_time',
         'data': {
-            'date': date_str
+            'date': date_str,
+            'hours': None,
+            'minutes': None
         }
     }
 
-    await callback.message.delete()
-    await callback.message.answer(
+    await callback.message.edit_text(
         f"📅 Выбрана дата: {date_str}\n"
-        f"⏰ Теперь введите время поездки в формате ЧЧ:ММ (например, 14:30):",
-        reply_markup=back_keyboard
+        f"⏰ Укажите время поездки:",
+        reply_markup=get_time_selection_keyboard()
+    )
+
+
+# Обработчики для выбора времени
+@dp.callback_query(F.data == "time_hours")
+async def select_hours(callback: types.CallbackQuery):
+    user_id = callback.from_user.id
+    if user_id not in trip_states:
+        return
+
+    await callback.message.edit_reply_markup(
+        reply_markup=get_time_selection_keyboard(hours=True)
+    )
+
+
+@dp.callback_query(F.data == "time_minutes")
+async def select_minutes(callback: types.CallbackQuery):
+    user_id = callback.from_user.id
+    if user_id not in trip_states:
+        return
+
+    await callback.message.edit_reply_markup(
+        reply_markup=get_time_selection_keyboard(minutes=True)
+    )
+
+
+@dp.callback_query(F.data.startswith("set_hour_"))
+async def set_hour(callback: types.CallbackQuery):
+    user_id = callback.from_user.id
+    if user_id not in trip_states:
+        return
+
+    hour = callback.data.split("_")[2]
+    trip_states[user_id]['data']['hours'] = hour
+
+    # Обновляю клавиатуру с выбранными значениями
+    h = trip_states[user_id]['data']['hours']
+    m = trip_states[user_id]['data']['minutes']
+
+    text = f"Часы: {h if h else '--'}, Минуты: {m if m else '--'}"
+    await callback.message.edit_reply_markup(
+        reply_markup=get_time_selection_keyboard()
+    )
+
+
+@dp.callback_query(F.data.startswith("set_min_"))
+async def set_minute(callback: types.CallbackQuery):
+    user_id = callback.from_user.id
+    if user_id not in trip_states:
+        return
+
+    minute = callback.data.split("_")[2]
+    trip_states[user_id]['data']['minutes'] = minute
+
+    # Обновляю клавиатуру с выбранными значениями
+    h = trip_states[user_id]['data']['hours']
+    m = trip_states[user_id]['data']['minutes']
+
+    text = f"Часы: {h if h else '--'}, Минуты: {m if m else '--'}"
+    await callback.message.edit_reply_markup(
+        reply_markup=get_time_selection_keyboard()
+    )
+
+
+@dp.callback_query(F.data == "time_back")
+async def time_back(callback: types.CallbackQuery):
+    user_id = callback.from_user.id
+    if user_id not in trip_states:
+        return
+
+    await callback.message.edit_reply_markup(
+        reply_markup=get_time_selection_keyboard()
+    )
+
+
+@dp.callback_query(F.data == "time_done")
+async def time_done(callback: types.CallbackQuery):
+    user_id = callback.from_user.id
+    if user_id not in trip_states:
+        return
+
+    data = trip_states[user_id]['data']
+    if not data['hours'] or not data['minutes']:
+        await callback.answer("Пожалуйста, укажите и часы, и минуты", show_alert=True)
+        return
+
+    time_str = f"{data['hours']}:{data['minutes']}"
+    trip_states[user_id]['data']['time'] = time_str
+    trip_states[user_id]['step'] = 'awaiting_address'
+
+    await callback.message.edit_text(
+        f"📅 Дата: {data['date']}\n"
+        f"⏰ Время: {time_str}\n\n"
+        f"Теперь введите адрес или место назначения:"
     )
 
 
@@ -562,7 +690,7 @@ def set_task_status(user_id, task_id, date, done):
             VALUES (?, ?, ?, ?)
         ''', (user_id, task_id, date, done))
 
-        # Если задача выполнена, обновляем статистику
+        # Если задача выполнена, обновляю
         if done:
             priority = get_task_priority(task_id)
             update_user_stats(user_id, priority)
@@ -855,6 +983,7 @@ async def reminder_loop(bot: Bot):
             user_meme_state[user_id]['last_sent_time'] = now
 
         await asyncio.sleep(60)  # Проверяю каждую минуту
+
 
 async def trip_reminder_loop(bot: Bot):
     while True:
