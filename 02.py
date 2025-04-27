@@ -1,4 +1,4 @@
-# Рабочая версия!!!!
+# Рабочая версия с добавлением встреч
 import asyncio
 import logging
 import sqlite3
@@ -45,7 +45,9 @@ CREATE TABLE IF NOT EXISTS daily_tasks (
     user_id INTEGER,
     task TEXT,
     date TEXT,
-    priority INTEGER DEFAULT 3  -- 1: высокая, 2: средняя, 3: низкая
+    priority INTEGER DEFAULT 3,  -- 1: высокая, 2: средняя, 3: низкая
+    is_meeting INTEGER DEFAULT 0, -- 0: обычная задача, 1: встреча
+    meeting_time TEXT -- время встречи
 )
 ''')
 
@@ -95,8 +97,6 @@ CREATE TABLE IF NOT EXISTS user_stats (
 
 conn.commit()
 
-
-
 # Основная клавиатура
 main_keyboard = ReplyKeyboardMarkup(
     keyboard=[
@@ -114,6 +114,17 @@ planning_keyboard = ReplyKeyboardMarkup(
     keyboard=[
         [KeyboardButton(text="Добавить задачу")],
         [KeyboardButton(text="Посмотреть список дел")]
+    ],
+    resize_keyboard=True,
+    one_time_keyboard=True
+)
+
+# Клавиатура для выбора типа задачи
+task_type_keyboard = ReplyKeyboardMarkup(
+    keyboard=[
+        [KeyboardButton(text="Добавить обычную задачу")],
+        [KeyboardButton(text="Добавить встречу")],
+        [KeyboardButton(text="Назад")]
     ],
     resize_keyboard=True,
     one_time_keyboard=True
@@ -174,9 +185,12 @@ def get_time_selection_keyboard(hours=None, minutes=None):
             builder.row(*buttons)
         builder.row(InlineKeyboardButton(text="⬅️ Назад", callback_data="time_back"))
         return builder.as_markup()
+
+
 # Хранилище состояния ожидания ввода задачи у пользователя
 user_states = {}
 trip_states = {}
+meeting_states = {}
 
 
 def get_task_status(user_id: int, task_id: int, date: str) -> bool:
@@ -196,8 +210,7 @@ def get_task_status(user_id: int, task_id: int, date: str) -> bool:
 @dp.message(F.text == "Мой прогресс")
 async def show_progress_handler(message: types.Message):
     await show_progress(message)
-
-    check_achievements
+    check_achievements(message.from_user.id)
 
 
 @dp.message(F.text == "Мои достижения")
@@ -248,10 +261,12 @@ def get_user_tasks(user_id: int) -> list:
     today_date = get_today_date()
     try:
         cursor.execute('''
-            SELECT t.id, t.task, t.priority
+            SELECT t.id, t.task, t.priority, t.is_meeting, t.meeting_time
             FROM daily_tasks t
             WHERE t.user_id = ? AND t.date = ?
-            ORDER BY t.priority ASC
+            ORDER BY 
+                CASE WHEN t.is_meeting = 1 THEN t.meeting_time ELSE '23:59' END ASC,
+                t.priority ASC
         ''', (user_id, today_date))
         return cursor.fetchall()
     except Exception as e:
@@ -339,24 +354,42 @@ async def send_tasks_with_status(message: types.Message):
         )
         return
 
+    # Разделяю задачи и встречи
+    regular_tasks = [task for task in tasks if task[3] == 0]  # is_meeting = 0
+    meetings = [task for task in tasks if task[3] == 1]  # is_meeting = 1
+
     text = "📝 Ваши ежедневные дела на сегодня:\n\n"
-    for i, (task_id, task_text, priority) in enumerate(tasks, 1):
-        done = get_task_status(user_id, task_id, today_date)
-        status = "✅" if done else "❌"
-        priority_icon = "🔴" if priority == 1 else "🟡" if priority == 2 else "🟢"
-        text += f"{i}. {priority_icon} {task_text} {status}\n"
+
+    # Обычные задачи
+    if regular_tasks:
+        text += "📌 Обычные задачи:\n"
+        for i, (task_id, task_text, priority, is_meeting, _) in enumerate(regular_tasks, 1):
+            done = get_task_status(user_id, task_id, today_date)
+            status = "✅" if done else "❌"
+            priority_icon = "🔴" if priority == 1 else "🟡" if priority == 2 else "🟢"
+            text += f"{i}. {priority_icon} {task_text} {status}\n"
+
+    # Встречи
+    if meetings:
+        text += "\n📅 Ваши встречи:\n"
+        for i, (task_id, task_text, priority, is_meeting, meeting_time) in enumerate(meetings,
+                                                                                     len(regular_tasks) + 1 if regular_tasks else 1):
+            done = get_task_status(user_id, task_id, today_date)
+            status = "✅" if done else "❌"
+            priority_icon = "🔴" if priority == 1 else "🟡" if priority == 2 else "🟢"
+            text += f"{i}. {priority_icon} {task_text} ⏰ {meeting_time} {status}\n"
 
     text += "\nЧтобы отметить задачу выполненной, отправьте её номер."
     await message.reply(text, reply_markup=main_keyboard)
     user_states[user_id] = 'awaiting_action'
 
 
-async def ask_task_priority(message: types.Message, task_text: str):
+async def ask_task_priority(message: types.Message, task_text: str, is_meeting: bool = False):
     keyboard = InlineKeyboardMarkup(inline_keyboard=[
         [
-            InlineKeyboardButton(text="🔴 Высокая", callback_data=f"set_priority:{task_text}:1"),
-            InlineKeyboardButton(text="🟡 Средняя", callback_data=f"set_priority:{task_text}:2"),
-            InlineKeyboardButton(text="🟢 Низкая", callback_data=f"set_priority:{task_text}:3")
+            InlineKeyboardButton(text="🔴 Высокая", callback_data=f"set_priority:{task_text}:1:{int(is_meeting)}"),
+            InlineKeyboardButton(text="🟡 Средняя", callback_data=f"set_priority:{task_text}:2:{int(is_meeting)}"),
+            InlineKeyboardButton(text="🟢 Низкая", callback_data=f"set_priority:{task_text}:3:{int(is_meeting)}")
         ]
     ])
 
@@ -369,9 +402,10 @@ async def ask_task_priority(message: types.Message, task_text: str):
 @dp.callback_query(F.data.startswith("set_priority:"))
 async def set_task_priority(callback: types.CallbackQuery):
     try:
-        _, task_text, priority = callback.data.split(":")
+        _, task_text, priority, is_meeting = callback.data.split(":")
         user_id = callback.from_user.id
         today_date = get_today_date()
+        is_meeting = bool(int(is_meeting))
 
         # Проверяю только задачи на сегодня
         cursor.execute('''
@@ -383,14 +417,27 @@ async def set_task_priority(callback: types.CallbackQuery):
             await callback.message.edit_text("❌ Такая задача уже есть на сегодня!")
             return
 
-        # Добавляю задачу
-        cursor.execute('''
-            INSERT INTO daily_tasks (user_id, task, date, priority)
-            VALUES (?, ?, ?, ?)
-        ''', (user_id, task_text, today_date, int(priority)))
-        conn.commit()
+        if is_meeting:
+            # Для встречи спрашиваю время
+            meeting_states[user_id] = {
+                'task_text': task_text,
+                'priority': int(priority),
+                'date': today_date
+            }
+            await callback.message.edit_text(
+                f"✅ Задача добавлена: {task_text} (Приоритет: {priority})\n"
+                f"Теперь укажите время встречи в формате ЧЧ:ММ (например, 14:30):"
+            )
+            user_states[user_id] = 'awaiting_meeting_time'
+        else:
+            # Добавляю обычную задачу
+            cursor.execute('''
+                INSERT INTO daily_tasks (user_id, task, date, priority, is_meeting)
+                VALUES (?, ?, ?, ?, ?)
+            ''', (user_id, task_text, today_date, int(priority), 0))
+            conn.commit()
 
-        await callback.message.edit_text(f"✅ Задача добавлена: {task_text} (Приоритет: {priority})")
+            await callback.message.edit_text(f"✅ Задача добавлена: {task_text} (Приоритет: {priority})")
 
     except sqlite3.Error as e:
         logging.error(f"Database error: {e}")
@@ -640,7 +687,15 @@ async def handle_text_for_sticker(message: types.Message):
 
 
 def get_user_tasks(user_id):
-    cursor.execute('SELECT id, task FROM daily_tasks WHERE user_id = ? AND date = ?', (user_id, get_today_date()))
+    today_date = get_today_date()
+    cursor.execute('''
+        SELECT t.id, t.task, t.priority, t.is_meeting, t.meeting_time
+        FROM daily_tasks t
+        WHERE t.user_id = ? AND t.date = ?
+        ORDER BY 
+            CASE WHEN t.is_meeting = 1 THEN t.meeting_time ELSE '23:59' END ASC,
+            t.priority ASC
+    ''', (user_id, today_date))
     return cursor.fetchall()
 
 
@@ -708,10 +763,13 @@ async def send_tasks_with_status(message: types.Message):
     today_date = get_today_date()
 
     cursor.execute('''
-        SELECT t.id, t.task, t.priority, s.done 
+        SELECT t.id, t.task, t.priority, t.is_meeting, t.meeting_time, s.done 
         FROM daily_tasks t
         LEFT JOIN daily_tasks_status s ON t.id = s.task_id AND s.user_id = t.user_id AND s.date = ?
         WHERE t.user_id = ? AND t.date = ?
+        ORDER BY 
+            CASE WHEN t.is_meeting = 1 THEN t.meeting_time ELSE '23:59' END ASC,
+            t.priority ASC
     ''', (today_date, user_id, today_date))
 
     tasks = cursor.fetchall()
@@ -723,13 +781,30 @@ async def send_tasks_with_status(message: types.Message):
         )
         return
 
-    text = "Ваши ежедневные дела на сегодня:\n"
-    for i, (task_id, task_text, priority, done) in enumerate(tasks, 1):
-        status = "✅" if done else "❌"
-        priority_icon = "🔴" if priority == 1 else "🟡" if priority == 2 else "🟢"
-        text += f"{i}. {priority_icon} {task_text} {status}\n"
-    text += "\nЧтобы отметить задачу выполненной, отправьте её номер."
+    # Разделяю задачи и встречи
+    regular_tasks = [task for task in tasks if task[3] == 0]  # is_meeting = 0
+    meetings = [task for task in tasks if task[3] == 1]  # is_meeting = 1
 
+    text = "📝 Ваши ежедневные дела на сегодня:\n\n"
+
+    # Обычные задачи
+    if regular_tasks:
+        text += "📌 Обычные задачи:\n"
+        for i, (task_id, task_text, priority, is_meeting, meeting_time, done) in enumerate(regular_tasks, 1):
+            status = "✅" if done else "❌"
+            priority_icon = "🔴" if priority == 1 else "🟡" if priority == 2 else "🟢"
+            text += f"{i}. {priority_icon} {task_text} {status}\n"
+
+    # Встречи
+    if meetings:
+        text += "\n📅 Ваши встречи:\n"
+        for i, (task_id, task_text, priority, is_meeting, meeting_time, done) in enumerate(meetings,
+                                                                                           len(regular_tasks) + 1 if regular_tasks else 1):
+            status = "✅" if done else "❌"
+            priority_icon = "🔴" if priority == 1 else "🟡" if priority == 2 else "🟢"
+            text += f"{i}. {priority_icon} {task_text} ⏰ {meeting_time} {status}\n"
+
+    text += "\nЧтобы отметить задачу выполненной, отправьте её номер."
     await message.reply(text, reply_markup=main_keyboard)
     user_states[user_id] = 'awaiting_action'
 
@@ -788,14 +863,25 @@ async def show_upcoming_trips(message: types.Message):
 
 @dp.message(F.text == "Добавить поездку")
 async def add_trip(message: types.Message):
-    # Начало добавления поездки - показываю календарь
-    await show_calendar(message.chat.id)
+    # Начало добавления поездки - показываем календарь
+    await show_calendar(message)
 
 
 @dp.message(F.text == "Добавить задачу")
 async def add_task_handler(message: types.Message):
+    await message.reply("Выберите тип задачи:", reply_markup=task_type_keyboard)
+
+
+@dp.message(F.text == "Добавить обычную задачу")
+async def add_regular_task_handler(message: types.Message):
     user_states[message.from_user.id] = 'awaiting_task'
-    await message.reply("Пожалуйста, введите текст задачи:", reply_markup=main_keyboard)
+    await message.reply("Пожалуйста, введите текст задачи:", reply_markup=back_keyboard)
+
+
+@dp.message(F.text == "Добавить встречу")
+async def add_meeting_handler(message: types.Message):
+    user_states[message.from_user.id] = 'awaiting_meeting'
+    await message.reply("Пожалуйста, введите описание встречи:", reply_markup=back_keyboard)
 
 
 def get_task_priority(task_id: int) -> int:
@@ -819,7 +905,6 @@ async def handle_buttons(message: types.Message):
     elif text == "Поездки":
         await message.reply("Вы выбрали 'Поездки'. Что вы хотите сделать?", reply_markup=trips_keyboard)
         return
-
     elif text == "Посмотреть мои поездки":
         await show_upcoming_trips(message)
         return
@@ -835,18 +920,62 @@ async def handle_buttons(message: types.Message):
     # Обработка состояний
     state = user_states.get(user_id)
 
-    if user_states.get(user_id) == 'awaiting_task':
-        await ask_task_priority(message, text)
+    if state == 'awaiting_task':
+        await ask_task_priority(message, text, is_meeting=False)
         user_states.pop(user_id)
         return
 
+    elif state == 'awaiting_meeting':
+        meeting_states[user_id] = {
+            'task_text': text,
+            'priority': None,
+            'date': get_today_date()
+        }
+        await ask_task_priority(message, text, is_meeting=True)
+        user_states.pop(user_id)
+        return
+
+    elif state == 'awaiting_meeting_time':
+        try:
+            # Проверяю формат времени
+            time_obj = datetime.strptime(text, '%H:%M')
+            time_str = time_obj.strftime('%H:%M')
+
+            # Получаю данные встречи
+            meeting_data = meeting_states[user_id]
+
+            # Добавляю встречу в базу
+            cursor.execute('''
+                    INSERT INTO daily_tasks 
+                    (user_id, task, date, priority, is_meeting, meeting_time)
+                    VALUES (?, ?, ?, ?, 1, ?)
+                ''', (user_id, meeting_data['task_text'], meeting_data['date'],
+                      meeting_data['priority'], time_str))
+            conn.commit()
+
+            await message.reply(
+                f"✅ Встреча добавлена:\n"
+                f"📝 {meeting_data['task_text']}\n"
+                f"⏰ Время: {time_str}\n"
+                f"🔢 Приоритет: {meeting_data['priority']}",
+                reply_markup=main_keyboard
+            )
+
+            meeting_states.pop(user_id)
+            user_states.pop(user_id)
+        except ValueError:
+            await message.reply(
+                "Неверный формат времени. Пожалуйста, введите время в формате ЧЧ:ММ (например, 14:30)",
+                reply_markup=back_keyboard
+            )
+        return
 
     elif state == 'awaiting_action':
         try:
             task_index = int(text) - 1
             tasks = get_user_tasks(user_id)
             if 0 <= task_index < len(tasks):
-                task_id, task_text = tasks[task_index]
+                task_id, task_text, priority, is_meeting, meeting_time = tasks[task_index]
                 today_date = get_today_date()
                 current_status = get_task_status(user_id, task_id, today_date)
                 new_status = 1 if current_status == 0 else 0
@@ -854,6 +983,9 @@ async def handle_buttons(message: types.Message):
                 if success:
                     status_text = "выполнена ✅" if new_status == 1 else "не выполнена ❌"
                     reply_text = f"Задача '{task_text}' отмечена как {status_text}."
+                    if is_meeting:
+                        reply_text = f"Встреча '{task_text}' (⏰ {meeting_time}) отмечена как {status_text}."
+
                     if new_status == 1 and new_badges:
                         reply_text += "\n\n🎉 Новые достижения:\n"
                         for name, desc in new_badges:
@@ -890,9 +1022,9 @@ async def handle_buttons(message: types.Message):
 
             try:
                 cursor.execute('''
-                    INSERT INTO trips (user_id, destination, date, time, address, created_at)
-                    VALUES (?, ?, ?, ?, ?, ?)
-                ''', (user_id, text, data['date'], data['time'], data['address'], data['created_at']))
+                        INSERT INTO trips (user_id, destination, date, time, address, created_at)
+                        VALUES (?, ?, ?, ?, ?, ?)
+                    ''', (user_id, text, data['date'], data['time'], data['address'], data['created_at']))
                 conn.commit()
 
                 map_url = f"https://yandex.ru/maps/?text={text.replace(' ', '+')}"
@@ -919,7 +1051,8 @@ async def reminder_loop(bot: Bot):
     MEME_MESSAGES = [
         {"text": "⏰ Осталось совсем мало времени! Поторопись!", "photo": "https://ltdfoto.ru/image/s4WGxu"},
         {"text": "🔥 Время тикает! Не откладывай на потом!", "photo": "https://ltdfoto.ru/image/s4WQ6Z"},
-        {"text": "🚀 Ты можешь это сделать! Осталось совсем немного!", "photo": "https://ltdfoto.ru/images/2025/04/20/CAK-NORIS.jpg"},
+        {"text": "🚀 Ты можешь это сделать! Осталось совсем немного!",
+         "photo": "https://ltdfoto.ru/images/2025/04/20/CAK-NORIS.jpg"},
         {"text": "Будь как Челентано!", "photo": "https://ltdfoto.ru/images/2025/04/20/CELENTANO.jpg"},
         {"text": "Помни об этом!", "photo": "https://ltdfoto.ru/images/2025/04/20/DI-KAPRIO-1.jpg"},
         {"text": "Не забывай, что!", "photo": "https://ltdfoto.ru/images/2025/04/27/VINDIEZL.jpg"},
@@ -927,92 +1060,98 @@ async def reminder_loop(bot: Bot):
         {"text": "Хочешь, не хочешь, но я тебе напомню", "photo": "https://ltdfoto.ru/images/2025/04/27/TERMINATOR.jpg"}
     ]
 
-    # Создаю таблицу для хранения состояния напоминаний
-    cursor.execute('''
-    CREATE TABLE IF NOT EXISTS reminder_states (
-        user_id INTEGER,
-        task_id INTEGER,
-        last_meme_index INTEGER DEFAULT 0,
-        last_sent_time TEXT,
-        PRIMARY KEY (user_id, task_id)
-    )
-    ''')
-    conn.commit()
-
     while True:
         now = datetime.now()
         today = get_today_date()
 
         # Получаю все незавершенные задачи
         cursor.execute('''
-            SELECT t.user_id, t.id, t.task, t.priority
+            SELECT t.user_id, t.id, t.task, t.priority, t.is_meeting, t.meeting_time
             FROM daily_tasks t
             LEFT JOIN daily_tasks_status s ON t.id = s.task_id AND s.user_id = t.user_id AND s.date = ?
             WHERE t.date = ? AND (s.done = 0 OR s.done IS NULL)
+            ORDER BY 
+                CASE WHEN t.is_meeting = 1 THEN t.meeting_time ELSE '23:59' END ASC
         ''', (today, today))
 
         tasks = cursor.fetchall()
 
-        for user_id, task_id, task_text, priority in tasks:
-            # Получаю состояние напоминаний для конкретной задачи
-            cursor.execute('''
-                SELECT last_meme_index, last_sent_time 
-                FROM reminder_states 
-                WHERE user_id = ? AND task_id = ?
-            ''', (user_id, task_id))
-            state = cursor.fetchone()
+        for user_id, task_id, task_text, priority, is_meeting, meeting_time in tasks:
+            # Для встреч проверяем, не настало ли время напоминания
+            if is_meeting and meeting_time:
+                try:
+                    meeting_datetime = datetime.strptime(f"{today} {meeting_time}", "%Y-%m-%d %H:%M")
+                    time_diff = (meeting_datetime - now).total_seconds() / 60  # разница в минутах
 
-            if state:
-                last_meme_index, last_sent_time_str = state
-                last_sent_time = datetime.strptime(last_sent_time_str, '%Y-%m-%d %H:%M:%S') if last_sent_time_str else None
-            else:
-                last_meme_index = 0
-                last_sent_time = None
-                cursor.execute('INSERT INTO reminder_states (user_id, task_id) VALUES (?, ?)', (user_id, task_id))
+                    # Напоминаем за 15 минут до встречи
+                    if 14 < time_diff <= 15:
+                        await bot.send_message(
+                            user_id,
+                            f"⏰ Напоминание о встрече через 15 минут:\n"
+                            f"📌 {task_text}\n"
+                            f"🕒 Время: {meeting_time}",
+                            reply_markup=main_keyboard
+                        )
+                        continue
+                except ValueError:
+                    pass
+
+            # Для обычных задач используем стандартные напоминания
+            if not is_meeting:
+                # Определяю интервал в зависимости от приоритета
+                if priority == 1:  # Высокий приоритет - каждый час
+                    reminder_interval = 3600
+                elif priority == 2:  # Средний приоритет - каждые 2 часа
+                    reminder_interval = 7200
+                else:  # Низкий приоритет - каждые 3 часа
+                    reminder_interval = 10800
+
+                # Проверяю, когда последний раз отправляли напоминание
+                cursor.execute('''
+                    SELECT last_sent_time FROM reminder_states 
+                    WHERE user_id = ? AND task_id = ?
+                ''', (user_id, task_id))
+                result = cursor.fetchone()
+
+                last_sent_time = datetime.strptime(result[0], '%Y-%m-%d %H:%M:%S') if result else None
+
+                if last_sent_time and (now - last_sent_time).total_seconds() < reminder_interval:
+                    continue
+
+                # Выбираю мем для напоминания
+                cursor.execute('''
+                    SELECT last_meme_index FROM reminder_states 
+                    WHERE user_id = ? AND task_id = ?
+                ''', (user_id, task_id))
+                result = cursor.fetchone()
+
+                meme_index = (result[0] + 1) % len(MEME_MESSAGES) if result else 0
+                meme = MEME_MEMESSAGES[meme_index]
+
+                try:
+                    await bot.send_photo(
+                        user_id,
+                        photo=meme["photo"],
+                        caption=f"{meme['text']}\n\nЗадача: {task_text}\nПриоритет: {'🔴 Высокий' if priority == 1 else '🟡 Средний' if priority == 2 else '🟢 Низкий'}",
+                        reply_markup=main_keyboard
+                    )
+                except Exception as e:
+                    logging.error(f"Ошибка отправки мема: {e}")
+                    await bot.send_message(
+                        user_id,
+                        f"{meme['text']}\n\nЗадача: {task_text}\nПриоритет: {'🔴 Высокий' if priority == 1 else '🟡 Средний' if priority == 2 else '🟢 Низкий'}",
+                        reply_markup=main_keyboard
+                    )
+
+                # Обновляю состояние напоминания
+                cursor.execute('''
+                    INSERT OR REPLACE INTO reminder_states 
+                    (user_id, task_id, last_meme_index, last_sent_time)
+                    VALUES (?, ?, ?, ?)
+                ''', (user_id, task_id, meme_index, now.strftime('%Y-%m-%d %H:%M:%S')))
                 conn.commit()
 
-            # Определяю интервал в зависимости от приоритета
-            if priority == 1:  # Высокий приоритет - каждый час
-                reminder_interval = 3600
-            elif priority == 2:  # Средний приоритет - каждые 2 часа
-                reminder_interval = 7200
-            else:  # Низкий приоритет - каждые 3 часа
-                reminder_interval = 10800
-
-            # Проверяю, нужно ли отправлять напоминание
-            if last_sent_time and (now - last_sent_time).total_seconds() < reminder_interval:
-                continue
-
-            # Получаю следующий мем
-            meme_index = (last_meme_index + 1) % len(MEME_MESSAGES)
-            meme = MEME_MESSAGES[meme_index]
-
-            try:
-                # Пытаюсь отправить мем
-                await bot.send_photo(
-                    user_id,
-                    photo=meme["photo"],
-                    caption=f"{meme['text']}\n\nЗадача: {task_text}\nПриоритет: {'🔴 Высокий' if priority == 1 else '🟡 Средний' if priority == 2 else '🟢 Низкий'}",
-                    reply_markup=main_keyboard
-                )
-            except Exception as e:
-                # Если не получилось отправить фото, отправляю текстовое сообщение
-                logging.error(f"Ошибка отправки мема: {e}")
-                await bot.send_message(
-                    user_id,
-                    f"{meme['text']}\n\nЗадача: {task_text}\nПриоритет: {'🔴 Высокий' if priority == 1 else '🟡 Средний' if priority == 2 else '🟢 Низкий'}",
-                    reply_markup=main_keyboard
-                )
-
-            # Обновляю состояние
-            cursor.execute('''
-                UPDATE reminder_states 
-                SET last_meme_index = ?, last_sent_time = ?
-                WHERE user_id = ? AND task_id = ?
-            ''', (meme_index, now.strftime('%Y-%m-%d %H:%M:%S'), user_id, task_id))
-            conn.commit()
-
-        await asyncio.sleep(5 * 60)  # Проверяю задачи каждые 5 минут
+        await asyncio.sleep(60)  # Проверяем задачи каждую минуту
 
 
 async def trip_reminder_loop(bot: Bot):
