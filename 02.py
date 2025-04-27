@@ -793,7 +793,10 @@ async def reminder_loop(bot: Bot):
         {"text": "🚀 Ты можешь это сделать! Осталось совсем немного!",
          "photo": "https://ltdfoto.ru/images/2025/04/20/CAK-NORIS.jpg"},
         {"text": "Будь как Челентано!", "photo": "https://ltdfoto.ru/images/2025/04/20/CELENTANO.jpg"},
-        {"text": "Помни об этом!", "photo": "https://ltdfoto.ru/images/2025/04/20/DI-KAPRIO-1.jpg"}
+        {"text": "Помни об этом!", "photo": "https://ltdfoto.ru/images/2025/04/20/DI-KAPRIO-1.jpg"},
+        {"text": "Не забывай, что!", "photo": "https://ltdfoto.ru/images/2025/04/27/VINDIEZL.jpg"},
+        {"text": "Ты еще не забыл!", "photo": "https://ltdfoto.ru/images/2025/04/27/TY-DISIS.jpg"},
+        {"text": "Хочешь, не хочешь, но я тебе напомню", "photo": "https://ltdfoto.ru/images/2025/04/27/TERMINATOR.jpg"}
     ]
 
     # Словарь для хранения состояния по пользователям
