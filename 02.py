@@ -10,8 +10,6 @@ from aiogram.utils.keyboard import InlineKeyboardBuilder
 from stic import cmd_start as stic_start, photo_handler as stic_photo_handler, caption_handler as stic_caption_handler, \
     user_data
 from stic import user_data as stic_user_data
-from flask import Flask, request
-import threading
 from config import BOT_TOKEN
 
 # делаю защиту против рекламы и т.д
@@ -97,19 +95,6 @@ CREATE TABLE IF NOT EXISTS user_stats (
 
 conn.commit()
 
-app = Flask(__name__)
-
-@app.route('/')
-def home():
-    return "Бот работает!", 200
-
-def run_flask():
-    app.run(host='0.0.0.0', port=8080)
-
-# Запускаю Flask в отдельном потоке
-flask_thread = threading.Thread(target=run_flask)
-flask_thread.daemon = True
-flask_thread.start()
 
 
 # Основная клавиатура
