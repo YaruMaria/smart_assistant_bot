@@ -914,12 +914,11 @@ async def handle_buttons(message: types.Message):
 
 
 async def reminder_loop(bot: Bot):
-    # список мемов сюда и сделала его постоянным
+    # Список мемов
     MEME_MESSAGES = [
         {"text": "⏰ Осталось совсем мало времени! Поторопись!", "photo": "https://ltdfoto.ru/image/s4WGxu"},
         {"text": "🔥 Время тикает! Не откладывай на потом!", "photo": "https://ltdfoto.ru/image/s4WQ6Z"},
-        {"text": "🚀 Ты можешь это сделать! Осталось совсем немного!",
-         "photo": "https://ltdfoto.ru/images/2025/04/20/CAK-NORIS.jpg"},
+        {"text": "🚀 Ты можешь это сделать! Осталось совсем немного!", "photo": "https://ltdfoto.ru/images/2025/04/20/CAK-NORIS.jpg"},
         {"text": "Будь как Челентано!", "photo": "https://ltdfoto.ru/images/2025/04/20/CELENTANO.jpg"},
         {"text": "Помни об этом!", "photo": "https://ltdfoto.ru/images/2025/04/20/DI-KAPRIO-1.jpg"},
         {"text": "Не забывай, что!", "photo": "https://ltdfoto.ru/images/2025/04/27/VINDIEZL.jpg"},
@@ -927,8 +926,17 @@ async def reminder_loop(bot: Bot):
         {"text": "Хочешь, не хочешь, но я тебе напомню", "photo": "https://ltdfoto.ru/images/2025/04/27/TERMINATOR.jpg"}
     ]
 
-    # Словарь для хранения состояния по пользователям
-    user_meme_state = {}
+    # Создаю таблицу для хранения состояния напоминаний
+    cursor.execute('''
+    CREATE TABLE IF NOT EXISTS reminder_states (
+        user_id INTEGER,
+        task_id INTEGER,
+        last_meme_index INTEGER DEFAULT 0,
+        last_sent_time TEXT,
+        PRIMARY KEY (user_id, task_id)
+    )
+    ''')
+    conn.commit()
 
     while True:
         now = datetime.now()
@@ -945,24 +953,41 @@ async def reminder_loop(bot: Bot):
         tasks = cursor.fetchall()
 
         for user_id, task_id, task_text, priority in tasks:
-            # Инициализирую состояние пользователя, если нужно
-            if user_id not in user_meme_state:
-                user_meme_state[user_id] = {
-                    'last_meme_index': 0,
-                    'last_sent_time': None
-                }
+            # Получаю состояние напоминаний для конкретной задачи
+            cursor.execute('''
+                SELECT last_meme_index, last_sent_time 
+                FROM reminder_states 
+                WHERE user_id = ? AND task_id = ?
+            ''', (user_id, task_id))
+            state = cursor.fetchone()
+
+            if state:
+                last_meme_index, last_sent_time_str = state
+                last_sent_time = datetime.strptime(last_sent_time_str, '%Y-%m-%d %H:%M:%S') if last_sent_time_str else None
+            else:
+                last_meme_index = 0
+                last_sent_time = None
+                cursor.execute('INSERT INTO reminder_states (user_id, task_id) VALUES (?, ?)', (user_id, task_id))
+                conn.commit()
+
+            # Определяю интервал в зависимости от приоритета
+            if priority == 1:  # Высокий приоритет - каждый час
+                reminder_interval = 3600
+            elif priority == 2:  # Средний приоритет - каждые 2 часа
+                reminder_interval = 7200
+            else:  # Низкий приоритет - каждые 3 часа
+                reminder_interval = 10800
 
             # Проверяю, нужно ли отправлять напоминание
-            last_sent = user_meme_state[user_id]['last_sent_time']
-            if last_sent and (now - last_sent).total_seconds() < 3600:  # 1 час между напоминаниями
+            if last_sent_time and (now - last_sent_time).total_seconds() < reminder_interval:
                 continue
 
             # Получаю следующий мем
-            meme_index = user_meme_state[user_id]['last_meme_index']
+            meme_index = (last_meme_index + 1) % len(MEME_MESSAGES)
             meme = MEME_MESSAGES[meme_index]
 
             try:
-                # отправдяю мем
+                # Пытаюсь отправить мем
                 await bot.send_photo(
                     user_id,
                     photo=meme["photo"],
@@ -979,10 +1004,14 @@ async def reminder_loop(bot: Bot):
                 )
 
             # Обновляю состояние
-            user_meme_state[user_id]['last_meme_index'] = (meme_index + 1) % len(MEME_MESSAGES)
-            user_meme_state[user_id]['last_sent_time'] = now
+            cursor.execute('''
+                UPDATE reminder_states 
+                SET last_meme_index = ?, last_sent_time = ?
+                WHERE user_id = ? AND task_id = ?
+            ''', (meme_index, now.strftime('%Y-%m-%d %H:%M:%S'), user_id, task_id))
+            conn.commit()
 
-        await asyncio.sleep(60)  # Проверяю каждую минуту
+        await asyncio.sleep(5 * 60)  # Проверяю задачи каждые 5 минут
 
 
 async def trip_reminder_loop(bot: Bot):
