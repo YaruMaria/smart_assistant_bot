@@ -95,6 +95,17 @@ CREATE TABLE IF NOT EXISTS user_stats (
 );
 ''')
 
+
+cursor.execute('''
+CREATE TABLE IF NOT EXISTS reminder_states (
+    user_id INTEGER,
+    task_id INTEGER,
+    last_meme_index INTEGER DEFAULT 0,
+    last_sent_time TEXT,
+    PRIMARY KEY (user_id, task_id)
+);
+''')
+
 conn.commit()
 
 # Основная клавиатура
@@ -1127,7 +1138,7 @@ async def reminder_loop(bot: Bot):
                 result = cursor.fetchone()
 
                 meme_index = (result[0] + 1) % len(MEME_MESSAGES) if result else 0
-                meme = MEME_MEMESSAGES[meme_index]
+                meme = MEME_MESSAGES[meme_index]
 
                 try:
                     await bot.send_photo(
