@@ -793,7 +793,7 @@ async def send_tasks_with_status(message: types.Message):
         )
         return
 
-    # Разделяю задачи и встречи
+    # Разделяем задачи и встречи
     regular_tasks = [task for task in tasks if task[3] == 0]  # is_meeting = 0
     meetings = [task for task in tasks if task[3] == 1]  # is_meeting = 1
 
@@ -810,13 +810,12 @@ async def send_tasks_with_status(message: types.Message):
     # Встречи
     if meetings:
         text += "\n📅 Ваши встречи:\n"
-        for i, (task_id, task_text, priority, is_meeting, meeting_time, done) in enumerate(meetings,
-                                                                                           len(regular_tasks) + 1 if regular_tasks else 1):
+        for j, (task_id, task_text, priority, is_meeting, meeting_time, done) in enumerate(meetings, 1):
             status = "✅" if done else "❌"
             priority_icon = "🔴" if priority == 1 else "🟡" if priority == 2 else "🟢"
-            text += f"{i}. {priority_icon} {task_text} ⏰ {meeting_time} {status}\n"
+            text += f"{j}.1. {priority_icon} {task_text} ⏰ {meeting_time} {status}\n"
 
-    text += "\nЧтобы отметить задачу выполненной, отправьте её номер."
+    text += "\nЧтобы отметить задачу выполненной, отправьте её номер (например, 1 или 2.1)."
     await message.reply(text, reply_markup=main_keyboard)
     user_states[user_id] = 'awaiting_action'
 
@@ -982,34 +981,65 @@ async def handle_buttons(message: types.Message):
             )
         return
 
+
     elif state == 'awaiting_action':
         try:
-            task_index = int(text) - 1
-            tasks = get_user_tasks(user_id)
-            if 0 <= task_index < len(tasks):
-                task_id, task_text, priority, is_meeting, meeting_time = tasks[task_index]
-                today_date = get_today_date()
-                current_status = get_task_status(user_id, task_id, today_date)
-                new_status = 1 if current_status == 0 else 0
-                success, new_badges = set_task_status(user_id, task_id, today_date, new_status)
-                if success:
-                    status_text = "выполнена ✅" if new_status == 1 else "не выполнена ❌"
-                    reply_text = f"Задача '{task_text}' отмечена как {status_text}."
-                    if is_meeting:
-                        reply_text = f"Встреча '{task_text}' (⏰ {meeting_time}) отмечена как {status_text}."
-
-                    if new_status == 1 and new_badges:
-                        reply_text += "\n\n🎉 Новые достижения:\n"
-                        for name, desc in new_badges:
-                            reply_text += f"🏅 {name}: {desc}\n"
-                    await message.reply(reply_text, reply_markup=main_keyboard)
+            # Проверяю, является ли номер встречей (с точкой)
+            if '.' in text:
+                # Обработка встречи (формат X.1)
+                parts = text.split('.')
+                if len(parts) == 2 and parts[1] == '1':
+                    task_index = int(parts[0]) - 1
+                    tasks = get_user_tasks(user_id)
+                    meetings = [task for task in tasks if task[3] == 1]  # is_meeting = 1
+                    if 0 <= task_index < len(meetings):
+                        task_id, task_text, priority, is_meeting, meeting_time = meetings[task_index]
+                        today_date = get_today_date()
+                        current_status = get_task_status(user_id, task_id, today_date)
+                        new_status = 1 if current_status == 0 else 0
+                        success, new_badges = set_task_status(user_id, task_id, today_date, new_status)
+                        if success:
+                            status_text = "выполнена ✅" if new_status == 1 else "не выполнена ❌"
+                            reply_text = f"Встреча '{task_text}' (⏰ {meeting_time}) отмечена как {status_text}."
+                            if new_status == 1 and new_badges:
+                                reply_text += "\n\n🎉 Новые достижения:\n"
+                                for name, desc in new_badges:
+                                    reply_text += f"🏅 {name}: {desc}\n"
+                            await message.reply(reply_text, reply_markup=main_keyboard)
+                        else:
+                            await message.reply("Не удалось обновить статус встречи.", reply_markup=main_keyboard)
+                        user_states.pop(user_id)
+                    else:
+                        await message.reply("Неверный номер встречи.", reply_markup=main_keyboard)
                 else:
-                    await message.reply("Не удалось обновить статус задачи.", reply_markup=main_keyboard)
-                user_states.pop(user_id)
+                    await message.reply("Неверный формат номера встречи. Используйте формат X.1",
+                                        reply_markup=main_keyboard)
             else:
-                await message.reply("Неверный номер задачи.", reply_markup=main_keyboard)
+                # Обработка обычной задачи
+                task_index = int(text) - 1
+                tasks = get_user_tasks(user_id)
+                regular_tasks = [task for task in tasks if task[3] == 0]  # is_meeting = 0
+                if 0 <= task_index < len(regular_tasks):
+                    task_id, task_text, priority, is_meeting, meeting_time = regular_tasks[task_index]
+                    today_date = get_today_date()
+                    current_status = get_task_status(user_id, task_id, today_date)
+                    new_status = 1 if current_status == 0 else 0
+                    success, new_badges = set_task_status(user_id, task_id, today_date, new_status)
+                    if success:
+                        status_text = "выполнена ✅" if new_status == 1 else "не выполнена ❌"
+                        reply_text = f"Задача '{task_text}' отмечена как {status_text}."
+                        if new_status == 1 and new_badges:
+                            reply_text += "\n\n🎉 Новые достижения:\n"
+                            for name, desc in new_badges:
+                                reply_text += f"🏅 {name}: {desc}\n"
+                        await message.reply(reply_text, reply_markup=main_keyboard)
+                    else:
+                        await message.reply("Не удалось обновить статус задачи.", reply_markup=main_keyboard)
+                    user_states.pop(user_id)
+                else:
+                    await message.reply("Неверный номер задачи.", reply_markup=main_keyboard)
         except ValueError:
-            await message.reply("Пожалуйста, введите номер задачи.", reply_markup=main_keyboard)
+            await message.reply("Пожалуйста, введите номер задачи или встречи.", reply_markup=main_keyboard)
         return
 
     # Обработка состояния поездки
@@ -1095,7 +1125,7 @@ async def reminder_loop(bot: Bot):
                     meeting_datetime = datetime.strptime(f"{today} {meeting_time}", "%Y-%m-%d %H:%M")
                     time_diff = (meeting_datetime - now).total_seconds() / 60  # разница в минутах
 
-                    # Напоминаем за 15 минут до встречи
+                    # Напоминание за 15 минут до встречи
                     if 14 < time_diff <= 15:
                         await bot.send_message(
                             user_id,
