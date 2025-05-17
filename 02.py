@@ -95,7 +95,6 @@ CREATE TABLE IF NOT EXISTS user_stats (
 );
 ''')
 
-
 cursor.execute('''
 CREATE TABLE IF NOT EXISTS reminder_states (
     user_id INTEGER,
@@ -672,7 +671,7 @@ async def time_done(callback: types.CallbackQuery):
 
 @dp.message(F.text == "Добавить поездку")
 async def add_trip(message: types.Message):
-    # Начало добавления поездки - показываем календарь
+    # Начало добавления поездки - показываю календарь
     await show_calendar(message)
 
 
@@ -793,7 +792,7 @@ async def send_tasks_with_status(message: types.Message):
         )
         return
 
-    # Разделяем задачи и встречи
+    # Разделяю задачи и встречи
     regular_tasks = [task for task in tasks if task[3] == 0]  # is_meeting = 0
     meetings = [task for task in tasks if task[3] == 1]  # is_meeting = 1
 
@@ -874,7 +873,7 @@ async def show_upcoming_trips(message: types.Message):
 
 @dp.message(F.text == "Добавить поездку")
 async def add_trip(message: types.Message):
-    # Начало добавления поездки - показываем календарь
+    # Начало добавления поездки - показывю календарь
     await show_calendar(message)
 
 
@@ -1058,23 +1057,24 @@ async def handle_buttons(message: types.Message):
                 await message.reply("Неверный формат времени. Попробуйте снова (ЧЧ:ММ).", reply_markup=back_keyboard)
             return
 
+
         elif step == 'awaiting_address':
             data['address'] = text
+            data['destination'] = text  # Добавлю пункт назначения
             data['created_at'] = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
-
             try:
                 cursor.execute('''
-                        INSERT INTO trips (user_id, destination, date, time, address, created_at)
-                        VALUES (?, ?, ?, ?, ?, ?)
-                    ''', (user_id, text, data['date'], data['time'], data['address'], data['created_at']))
+                    INSERT INTO trips (user_id, destination, date, time, address, created_at)
+                    VALUES (?, ?, ?, ?, ?, ?)
+                ''', (user_id, data['destination'], data['date'], data['time'], data['address'], data['created_at']))
                 conn.commit()
-
-                map_url = f"https://yandex.ru/maps/?text={text.replace(' ', '+')}"
+                map_url = f"https://yandex.ru/maps/?text={data['address'].replace(' ', '+')}"
                 await message.reply(
                     f"🚗 Поездка добавлена!\n"
+                    f"📍 Пункт назначения: {data['destination']}\n"
                     f"📅 Дата: {data['date']}\n"
                     f"⏰ Время: {data['time']}\n"
-                    f"📍 Адрес: {data['address']}\n\n"
+                    f"🏠 Адрес: {data['address']}\n\n"
                     f"🗺 Открыть на карте: {map_url}",
                     reply_markup=main_keyboard
                 )
@@ -1082,9 +1082,8 @@ async def handle_buttons(message: types.Message):
                 logging.error(f"Ошибка при сохранении поездки: {e}")
                 await message.reply("Произошла ошибка при сохранении поездки.", reply_markup=main_keyboard)
             finally:
-                trip_states.pop(user_id)
+                trip_states.pop(user_id, None)  # Удаляю состояние поездки
             return
-
     await message.reply("Я не понимаю эту команду.", reply_markup=main_keyboard)
 
 
@@ -1119,7 +1118,7 @@ async def reminder_loop(bot: Bot):
         tasks = cursor.fetchall()
 
         for user_id, task_id, task_text, priority, is_meeting, meeting_time in tasks:
-            # Для встреч проверяем, не настало ли время напоминания
+            # Для встреч проверяю, не настало ли время напоминания
             if is_meeting and meeting_time:
                 try:
                     meeting_datetime = datetime.strptime(f"{today} {meeting_time}", "%Y-%m-%d %H:%M")
@@ -1193,7 +1192,7 @@ async def reminder_loop(bot: Bot):
                 ''', (user_id, task_id, meme_index, now.strftime('%Y-%m-%d %H:%M:%S')))
                 conn.commit()
 
-        await asyncio.sleep(60)  # Проверяем задачи каждую минуту
+        await asyncio.sleep(60)  # Проверяю задачи каждую минуту
 
 
 async def trip_reminder_loop(bot: Bot):

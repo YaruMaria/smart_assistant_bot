@@ -53,7 +53,7 @@ def init_db():
 init_db()
 
 # Настройка бота
-API_TOKEN = '7585920451:AAFr1eFDKgH37GoqztPry9uw0XHWUTcVCrM'
+API_TOKEN = '7585920451:AAHyxJtmuR9vDcLk48yRszkmpTLc_vHxbP0'
 bot = Bot(token=API_TOKEN)
 dp = Dispatcher(storage=MemoryStorage())
 
